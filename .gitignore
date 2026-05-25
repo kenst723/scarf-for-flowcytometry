@@ -1,0 +1,35 @@
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data and Results
+# フローサイトメトリーの生データや学習結果（CSV/FCS/画像）は重いため除外します
+data/
+results/
+learning/result/
+*.csv
+*.fcs
+*.png
+*.jpg
+*.pdf
+*.h5
+*.pth
+*.pt
+
+# OS generated files
+.DS_Store
+Thumbs.db
