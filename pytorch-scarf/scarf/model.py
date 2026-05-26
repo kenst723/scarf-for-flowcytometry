@@ -4,55 +4,51 @@ from torch import Tensor
 from torch.distributions.uniform import Uniform
 import math
 
-class PLREncoding(nn.Module):
-    def __init__(self, num_features: int, num_frequencies: int, sigma: float, embedding_dim: int) -> None:
+class PeriodicLayer(nn.Module):
+    def __init__(self, num_features: int, num_frequencies: int, sigma: float) -> None:
         super().__init__()
-        self.num_features = num_features
-        self.num_frequencies = num_frequencies
-        self.embedding_dim = embedding_dim
-        
-        # 1. Periodic (特徴量ごとに独立した周波数: num_features x num_frequencies)
-        frequencies = torch.randn(num_features, num_frequencies) * sigma
-        self.frequencies = nn.Parameter(frequencies)
-        
-        # 2. Linear (特徴量ごとに独立した全結合層)
-        # 入力次元は 2 * num_frequencies, 出力次元は embedding_dim
-        self.linear_weights = nn.Parameter(torch.Tensor(num_features, 2 * num_frequencies, embedding_dim))
-        self.linear_bias = nn.Parameter(torch.Tensor(num_features, embedding_dim))
-        
-        # Pytorch標準のLinear層と同じ方法で初期化
-        nn.init.kaiming_uniform_(self.linear_weights, a=math.sqrt(5))
-        fan_in = 2 * num_frequencies
-        bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-        nn.init.uniform_(self.linear_bias, -bound, bound)
-        
-        # 3. ReLU
-        self.relu = nn.ReLU()
+        self.frequencies = nn.Parameter(torch.randn(num_features, num_frequencies) * sigma)
 
     def forward(self, x: Tensor) -> Tensor:
-        # x: (batch_size, num_features)
-        
-        # --- 1. Periodic ---
-        # v: (batch_size, num_features, num_frequencies)
         v = 2 * math.pi * x.unsqueeze(-1) * self.frequencies.unsqueeze(0)
-        # periodic: (batch_size, num_features, 2 * num_frequencies)
-        periodic = torch.cat([torch.sin(v), torch.cos(v)], dim=-1)
+        return torch.cat([torch.sin(v), torch.cos(v)], dim=-1)
+
+class PerFeatureLinear(nn.Module):
+    def __init__(self, num_features: int, in_features: int, out_features: int) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.Tensor(num_features, in_features, out_features))
+        self.bias = nn.Parameter(torch.Tensor(num_features, out_features))
         
-        # --- 2. Linear ---
-        # out: (batch_size, num_features, embedding_dim)
-        out = torch.einsum('bfj,fjd->bfd', periodic, self.linear_weights) + self.linear_bias
-        
-        # --- 3. ReLU ---
-        out = self.relu(out)
-        
-        # 平坦化: (batch_size, num_features * embedding_dim)
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        fan_in = in_features
+        bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+        nn.init.uniform_(self.bias, -bound, bound)
+
+    def forward(self, x: Tensor) -> Tensor:
+        out = torch.einsum('bfj,fjd->bfd', x, self.weight) + self.bias
         return out.flatten(1)
 
 
 class MLP(torch.nn.Sequential):
-    def __init__(self, input_dim: int, hidden_dim: int, num_hidden: int, dropout: float = 0.0) -> None:
+    def __init__(
+        self, 
+        input_dim: int, 
+        hidden_dim: int, 
+        num_hidden: int, 
+        dropout: float = 0.0,
+        num_frequencies: int = 0,
+        sigma: float = 1.0,
+        embedding_dim: int = 16
+    ) -> None:
         layers = []
         in_dim = input_dim
+        
+        if num_frequencies > 0:
+            layers.append(PeriodicLayer(input_dim, num_frequencies, sigma))
+            layers.append(PerFeatureLinear(input_dim, 2 * num_frequencies, embedding_dim))
+            layers.append(nn.ReLU(inplace=True))
+            in_dim = input_dim * embedding_dim
+            
         for _ in range(num_hidden - 1):
             layers.append(nn.Linear(in_dim, hidden_dim))
             layers.append(nn.BatchNorm1d(hidden_dim))
@@ -83,11 +79,11 @@ class SCARF(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.periodic = PLREncoding(input_dim, num_frequencies, sigma, embedding_dim)
-        expanded_input_dim = input_dim * embedding_dim
-
-        self.encoder = MLP(expanded_input_dim, dim_hidden_encoder, num_hidden_encoder, dropout)
-        self.pretraining_head = MLP(dim_hidden_encoder, dim_hidden_head, num_hidden_head, dropout)
+        self.encoder = MLP(
+            input_dim, dim_hidden_encoder, num_hidden_encoder, dropout, 
+            num_frequencies=num_frequencies, sigma=sigma, embedding_dim=embedding_dim
+        )
+        self.pretraining_head = MLP(dim_hidden_encoder, dim_hidden_head, num_hidden_head, dropout, num_frequencies=0)
 
         # uniform disstribution over marginal distributions of dataset's features
         self.marginals = Uniform(torch.Tensor(features_low), torch.Tensor(features_high))
@@ -104,8 +100,8 @@ class SCARF(nn.Module):
         x_corrupted = torch.where(corruption_mask, x_random, x)
 
         # get embeddings
-        encoded_x = self.encoder(self.periodic(x))
-        encoded_corrupted = self.encoder(self.periodic(x_corrupted))
+        encoded_x = self.encoder(x)
+        encoded_corrupted = self.encoder(x_corrupted)
         
         embeddings = self.pretraining_head(encoded_x)
         embeddings_corrupted = self.pretraining_head(encoded_corrupted)
@@ -114,4 +110,4 @@ class SCARF(nn.Module):
 
     @torch.inference_mode()
     def get_embeddings(self, x: Tensor) -> Tensor:
-        return self.encoder(self.periodic(x))
+        return self.encoder(x)
