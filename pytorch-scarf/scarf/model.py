@@ -2,6 +2,26 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.distributions.uniform import Uniform
+import math
+
+class PeriodicEncoding(nn.Module):
+    def __init__(self, input_dim: int, num_frequencies: int, sigma: float) -> None:
+        super().__init__()
+        # c_i: shape (input_dim, num_frequencies), initialized from N(0, sigma)
+        frequencies = torch.randn(input_dim, num_frequencies) * sigma
+        self.frequencies = nn.Parameter(frequencies)
+
+    def forward(self, x: Tensor) -> Tensor:
+        # x: (batch_size, input_dim)
+        # v = 2 * pi * c_i * x
+        # 効率的に計算するために einsum を使用
+        v = 2 * math.pi * torch.einsum('bi,ij->bij', x, self.frequencies)
+        
+        # concat [sin(v), cos(v)]
+        out = torch.cat([torch.sin(v), torch.cos(v)], dim=-1)
+        
+        # 平坦化: (batch_size, input_dim * num_frequencies * 2)
+        return out.view(x.size(0), -1)
 
 
 class MLP(torch.nn.Sequential):
@@ -32,10 +52,15 @@ class SCARF(nn.Module):
         num_hidden_head: int,
         corruption_rate: float = 0.6,
         dropout: float = 0.0,
+        num_frequencies: int = 4,
+        sigma: float = 1.0,
     ) -> None:
         super().__init__()
 
-        self.encoder = MLP(input_dim, dim_hidden_encoder, num_hidden_encoder, dropout)
+        self.periodic = PeriodicEncoding(input_dim, num_frequencies, sigma)
+        expanded_input_dim = input_dim * num_frequencies * 2
+
+        self.encoder = MLP(expanded_input_dim, dim_hidden_encoder, num_hidden_encoder, dropout)
         self.pretraining_head = MLP(dim_hidden_encoder, dim_hidden_head, num_hidden_head, dropout)
 
         # uniform disstribution over marginal distributions of dataset's features
@@ -53,11 +78,14 @@ class SCARF(nn.Module):
         x_corrupted = torch.where(corruption_mask, x_random, x)
 
         # get embeddings
-        embeddings = self.pretraining_head(self.encoder(x))
-        embeddings_corrupted = self.pretraining_head(self.encoder(x_corrupted))
+        encoded_x = self.encoder(self.periodic(x))
+        encoded_corrupted = self.encoder(self.periodic(x_corrupted))
+        
+        embeddings = self.pretraining_head(encoded_x)
+        embeddings_corrupted = self.pretraining_head(encoded_corrupted)
 
         return embeddings, embeddings_corrupted
 
     @torch.inference_mode()
     def get_embeddings(self, x: Tensor) -> Tensor:
-        return self.encoder(x)
+        return self.encoder(self.periodic(x))
