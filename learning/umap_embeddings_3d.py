@@ -1,10 +1,10 @@
 """
-SCARF Embeddings UMAP Visualization
+SCARF Embeddings 3D UMAP Visualization
 
-This script runs UMAP on SCARF embeddings and saves the plot to the result folder.
+This script runs 3D UMAP on SCARF embeddings and saves the plot to the result folder.
 
 Usage:
-    python -m learning.umap_embeddings --embeddings <embeddings_csv> --fcs <fcs_file>
+    python -m learning.umap_embeddings_3d --embeddings <embeddings_csv> --fcs <fcs_file>
     or run without arguments to auto-discover and process all generated embeddings.
 """
 
@@ -14,9 +14,9 @@ import argparse
 
 import numpy as np
 import pandas as pd
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+import plotly.express as px
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 import fcsparser
 import umap
 
@@ -28,8 +28,8 @@ from config import COFACTOR
 from learning.scarf import discover_samples
 
 
-def run_umap_projection(embeddings_path, fcs_path, output_dir, stain_name=None, cofactor=None, seed=42, sample_label=None):
-    """Run UMAP on SCARF embeddings and save the plots."""
+def run_umap_projection_3d(embeddings_path, fcs_path, output_dir, stain_name=None, cofactor=None, seed=42, sample_label=None):
+    """Run 3D UMAP on SCARF embeddings and save the plots."""
     if cofactor is None:
         cofactor = COFACTOR
 
@@ -77,52 +77,82 @@ def run_umap_projection(embeddings_path, fcs_path, output_dir, stain_name=None, 
             stain_title_suffix = 'Colored by SSC - Area'
             print("No fluorescence channels found, falling back to SSC - Area")
 
-    # UMAP Dimensionality Reduction
-    print("Running UMAP on SCARF embeddings (this may take 10-20 seconds)...")
+    # UMAP Dimensionality Reduction (3D)
+    print("Running 3D UMAP on SCARF embeddings (this may take 10-30 seconds)...")
     reducer = umap.UMAP(
-        n_neighbors=60,
+        n_components=3,  # Set to 3D
+        n_neighbors=30,
         min_dist=0.3,
         metric='euclidean',
         random_state=seed
     )
     umap_embedding = reducer.fit_transform(X_embeddings)
 
-    print("Generating UMAP plot...")
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+    print("Generating interactive 3D UMAP plot (HTML)...")
+    
+    # Create DataFrame for plotly
+    plot_df = pd.DataFrame({
+        'UMAP1': umap_embedding[:, 0],
+        'UMAP2': umap_embedding[:, 1],
+        'UMAP3': umap_embedding[:, 2],
+        'FSC_Area': df_fcs['FSC - Area'].values,
+        'Stain_Intensity': stain_values
+    })
 
-    # Colored by cell size (FSC)
-    sc1 = axes[0].scatter(
-        umap_embedding[:, 0], umap_embedding[:, 1],
-        c=df_fcs['FSC - Area'], cmap='jet',
-        s=2, alpha=0.7, edgecolors='none'
+    fig = make_subplots(
+        rows=1, cols=2,
+        specs=[[{'type': 'scatter3d'}, {'type': 'scatter3d'}]],
+        subplot_titles=('Colored by FSC (Cell Size)', f'Colored by {stain_label_str}')
     )
-    axes[0].set_title('SCARF UMAP (Colored by FSC - Cell Size)', fontsize=14, fontweight='bold')
-    axes[0].set_xticks([]); axes[0].set_yticks([])
-    fig.colorbar(sc1, ax=axes[0], label='FSC - Area')
 
-    # Colored by stain intensity / fallback
-    sc2 = axes[1].scatter(
-        umap_embedding[:, 0], umap_embedding[:, 1],
-        c=stain_values, cmap='jet',
-        s=2, alpha=0.7, edgecolors='none'
+    # Add FSC scatter
+    fig.add_trace(
+        go.Scatter3d(
+            x=plot_df['UMAP1'], y=plot_df['UMAP2'], z=plot_df['UMAP3'],
+            mode='markers',
+            marker=dict(
+                size=2,
+                color=plot_df['FSC_Area'],
+                colorscale='Jet',
+                opacity=0.7,
+                colorbar=dict(title="FSC Area", x=0.45)
+            )
+        ),
+        row=1, col=1
     )
-    axes[1].set_title(f'SCARF UMAP ({stain_title_suffix})', fontsize=14, fontweight='bold')
-    axes[1].set_xticks([]); axes[1].set_yticks([])
-    fig.colorbar(sc2, ax=axes[1], label=stain_label_str)
+
+    # Add Stain scatter
+    fig.add_trace(
+        go.Scatter3d(
+            x=plot_df['UMAP1'], y=plot_df['UMAP2'], z=plot_df['UMAP3'],
+            mode='markers',
+            marker=dict(
+                size=2,
+                color=plot_df['Stain_Intensity'],
+                colorscale='Jet',
+                opacity=0.7,
+                colorbar=dict(title=stain_label_str, x=1.0)
+            )
+        ),
+        row=1, col=2
+    )
 
     title_label = sample_label if sample_label else os.path.splitext(os.path.basename(embeddings_path))[0]
-    fig.suptitle(f'SCARF + UMAP Representation — {title_label}', fontsize=16, fontweight='bold')
-    plt.tight_layout()
+    fig.update_layout(
+        title=f'SCARF + 3D UMAP Representation — {title_label}',
+        width=1600,
+        height=800,
+        margin=dict(l=0, r=0, b=0, t=50)
+    )
 
-    output_filename = f"{title_label}_umap.png" if sample_label else "scarf_umap.png"
+    output_filename = f"{title_label}_umap_3d.html" if sample_label else "scarf_umap_3d.html"
     umap_plot_path = os.path.join(output_dir, output_filename)
-    plt.savefig(umap_plot_path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    print(f"UMAP plot saved to: {umap_plot_path}")
+    fig.write_html(umap_plot_path)
+    print(f"Interactive 3D UMAP plot saved to: {umap_plot_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='SCARF Embeddings UMAP Visualization')
+    parser = argparse.ArgumentParser(description='SCARF Embeddings 3D UMAP Visualization')
     parser.add_argument('--embeddings', type=str, default=None, help='Path to the SCARF embeddings CSV file (optional)')
     parser.add_argument('--fcs', type=str, default=None, help='Path to the corresponding .fcs file (optional)')
     parser.add_argument('--output-dir', type=str, default=None, help='Directory to save the UMAP plot')
@@ -146,7 +176,7 @@ def main():
                     stain_name = part
                     break
 
-        run_umap_projection(
+        run_umap_projection_3d(
             embeddings_path=args.embeddings,
             fcs_path=args.fcs,
             output_dir=args.output_dir,
@@ -172,9 +202,9 @@ def main():
             
             if os.path.isfile(embeddings_path):
                 print("\n" + "=" * 60)
-                print(f"Running UMAP for sample: {sample_label}")
+                print(f"Running 3D UMAP for sample: {sample_label}")
                 print("=" * 60)
-                run_umap_projection(
+                run_umap_projection_3d(
                     embeddings_path=embeddings_path,
                     fcs_path=sample['fcs'],
                     output_dir=args.output_dir,
