@@ -16,7 +16,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 # ディレクトリ
 # ---------------------------------------------------------------------------
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
-RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "analysis", "results")
 SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 
 # ---------------------------------------------------------------------------

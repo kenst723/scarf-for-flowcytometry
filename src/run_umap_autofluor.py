@@ -9,7 +9,7 @@ Usage:
         --neg-dir "data/Experiment 2026!05!21 15!59/24 Tube Rack (5mL) - 1/Negative" \
         --stain-dir "data/Experiment 2026!05!21 15!59/24 Tube Rack (5mL) - 1/PI" \
         --stain PI \
-        --output "results/2026-05-21/autofluor_umap.html"
+        --output "analysis/results/2026-05-21/autofluor_umap.html"
 """
 
 import os
@@ -51,7 +51,7 @@ def load_spectral_data(sraw_path, fcs_path, cofactor=None):
         cofactor = COFACTOR
 
     # .sraw → CSV 変換（一時的に result フォルダに出力）
-    temp_dir = os.path.join(PROJECT_ROOT, "results", "_temp_autofluor")
+    temp_dir = os.path.join(PROJECT_ROOT, "analysis", "results", "_temp_autofluor")
     os.makedirs(temp_dir, exist_ok=True)
     csv_path, df_sraw = convert_sraw_to_csv(sraw_path, output_dir=temp_dir)
 
@@ -315,7 +315,7 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     print(f"\n  Interactive 2D plot saved to: {output_path}")
 
     # 一時フォルダの削除
-    temp_dir = os.path.join(PROJECT_ROOT, "results", "_temp_autofluor")
+    temp_dir = os.path.join(PROJECT_ROOT, "analysis", "results", "_temp_autofluor")
     try:
         os.rmdir(temp_dir)
     except OSError:
@@ -326,7 +326,7 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
 
 def main():
     parser = argparse.ArgumentParser(
-        description='自家蛍光 UMAP + マーカー投影 (3D Plotly)'
+        description='自家蛍光 UMAP + マーカー投影 (2D Plotly)'
     )
     parser.add_argument('--neg-dir', type=str, required=True,
                         help='ネガティブコントロールのデータディレクトリ')
@@ -344,7 +344,7 @@ def main():
     args = parser.parse_args()
 
     if args.output is None:
-        results_dir = os.path.join(PROJECT_ROOT, "results")
+        results_dir = os.path.join(PROJECT_ROOT, "analysis", "results")
         os.makedirs(results_dir, exist_ok=True)
         args.output = os.path.join(results_dir, f"autofluor_umap_{args.stain}.html")
 
