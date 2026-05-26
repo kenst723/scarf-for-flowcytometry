@@ -112,7 +112,8 @@ def run_pipeline(experiment_folder, rack_name, stain_name):
             print("  -> Generating Group UMAP...")
             try:
                 output_path = os.path.join(results_base_dir, f"autofluor_umap_{stain_name}.html")
-                run_umap_autofluor(neg_dir, sraw_dir, output_path, stain_name=stain_name)
+                png_path = os.path.join(results_base_dir, f"autofluor_umap_{stain_name}.png")
+                run_umap_autofluor(neg_dir, sraw_dir, output_path, stain_name=stain_name, png_output_path=png_path)
             except Exception as e:
                 print(f"  Warning: UMAP projection failed: {e}")
         else:

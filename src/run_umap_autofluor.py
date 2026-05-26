@@ -1,17 +1,3 @@
-"""
-自家蛍光 UMAP + マーカー投影 (2D Plotly)
-
-ネガティブコントロール（無染色）のスペクトルデータで UMAP 座標系を学習し、
-マーカー染色サンプルをその空間に投影して蛍光強度で色付けした 2D プロットを生成する。
-
-Usage:
-    python -m src.run_umap_autofluor \
-        --neg-dir "data/Experiment 2026!05!21 15!59/24 Tube Rack (5mL) - 1/Negative" \
-        --stain-dir "data/Experiment 2026!05!21 15!59/24 Tube Rack (5mL) - 1/PI" \
-        --stain PI \
-        --output "analysis/results/2026-05-21/autofluor_umap.html"
-"""
-
 import os
 import sys
 import argparse
@@ -25,7 +11,7 @@ import umap
 import fcsparser
 from sklearn.preprocessing import StandardScaler
 
-# プロジェクトルートを path に追加
+# Add project root to path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
@@ -34,40 +20,23 @@ from src.convert import convert_sraw_to_csv
 
 
 def load_spectral_data(sraw_path, fcs_path, cofactor=None):
-    """
-    .sraw を CSV に変換し、スペクトルチャネル (Area_XXXnm) のみ抽出して返す。
-    FCS ファイルからは scatter (FSC/SSC) や蛍光チャネルの値も取得する。
-
-    Returns
-    -------
-    X_spectral : np.ndarray
-        スペクトルチャネルの値 (num_events, num_spectral_channels)
-    wl_features : list[str]
-        スペクトルチャネルのカラム名リスト
-    df_fcs : pd.DataFrame
-        FCS データフレーム（色付け用チャネルの取得に使用）
-    """
     if cofactor is None:
         cofactor = COFACTOR
 
-    # .sraw → CSV 変換（一時的に result フォルダに出力）
     temp_dir = os.path.join(PROJECT_ROOT, "analysis", "results", "_temp_autofluor")
     os.makedirs(temp_dir, exist_ok=True)
     csv_path, df_sraw = convert_sraw_to_csv(sraw_path, output_dir=temp_dir)
 
-    # FCS 読み込み
     _, df_fcs = fcsparser.parse(fcs_path, reformat_meta=True)
     assert len(df_sraw) == len(df_fcs), \
         f"Event counts do not match: sraw={len(df_sraw)}, fcs={len(df_fcs)}"
 
-    # スペクトルチャネルのみ抽出 (638.6nm レーザーノイズを除外)
     wl_features = [
         c for c in df_sraw.columns
         if c.startswith('Area_') and c.endswith('nm') and '638.6nm' not in c
     ]
     X_spectral = df_sraw[wl_features].values
 
-    # 一時ファイルの削除
     try:
         os.remove(csv_path)
     except OSError:
@@ -77,14 +46,6 @@ def load_spectral_data(sraw_path, fcs_path, cofactor=None):
 
 
 def find_sraw_fcs_pairs(directory):
-    """
-    ディレクトリ内の .sraw ファイルと対応する .fcs ファイルのペアを返す。
-
-    Returns
-    -------
-    pairs : list[tuple[str, str]]
-        [(sraw_path, fcs_path), ...]
-    """
     pairs = []
     sraw_files = sorted(glob.glob(os.path.join(directory, "*.sraw")))
     for sraw_path in sraw_files:
@@ -98,30 +59,12 @@ def find_sraw_fcs_pairs(directory):
 
 
 def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
-                       cofactor=None, seed=42):
-    """
-    自家蛍光 UMAP + マーカー投影パイプライン。
-
-    Parameters
-    ----------
-    neg_dir : str
-        ネガティブコントロール（無染色）のデータディレクトリ
-    stain_dir : str
-        マーカー染色サンプルのデータディレクトリ
-    output_path : str
-        出力 HTML ファイルのパス
-    stain_name : str
-        染色マーカー名 (例: "PI")
-    cofactor : float, optional
-        ArcSinh 変換の cofactor
-    seed : int
-        UMAP の乱数シード
-    """
+                       cofactor=None, seed=42, png_output_path=None):
     if cofactor is None:
         cofactor = COFACTOR
 
     # =========================================================================
-    # 1. Negative サンプルの読み込み
+    # 1. Loading Negative Samples (used for Reference Spectra extraction)
     # =========================================================================
     print("=" * 60)
     print("Step 1: Loading Negative (autofluorescence) samples...")
@@ -132,25 +75,22 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
         print(f"Error: No .sraw/.fcs pairs found in {neg_dir}")
         sys.exit(1)
 
+    neg_pairs = neg_pairs[:1]
     neg_spectral_list = []
-    neg_fcs_list = []
     wl_features = None
 
     for sraw_path, fcs_path in neg_pairs:
         print(f"  Loading {os.path.basename(sraw_path)}...")
-        X_sp, wl_feat, df_fcs = load_spectral_data(sraw_path, fcs_path, cofactor)
+        X_sp, wl_feat, _ = load_spectral_data(sraw_path, fcs_path, cofactor)
         neg_spectral_list.append(X_sp)
-        neg_fcs_list.append(df_fcs)
         if wl_features is None:
             wl_features = wl_feat
 
     X_neg = np.vstack(neg_spectral_list)
-    df_neg_fcs = pd.concat(neg_fcs_list, ignore_index=True)
     print(f"  Total Negative events: {len(X_neg)} ({len(neg_pairs)} files)")
-    print(f"  Spectral channels: {len(wl_features)}")
 
     # =========================================================================
-    # 2. Stained サンプルの読み込み
+    # 2. Loading Stained Samples
     # =========================================================================
     print(f"\n{'=' * 60}")
     print(f"Step 2: Loading {stain_name}-stained samples...")
@@ -175,28 +115,112 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     print(f"  Total {stain_name} events: {len(X_stain)} ({len(stain_pairs)} files)")
 
     # =========================================================================
-    # 3. 前処理 (ArcSinh + StandardScaler)
+    # 3. Extracting unmixed intensity and Reconstructing AF Spectra
     # =========================================================================
     print(f"\n{'=' * 60}")
-    print("Step 3: Preprocessing (ArcSinh + StandardScaler)...")
+    print(f"Step 3: Extracting unmixed intensity & Reconstructing AF Spectra...")
     print("=" * 60)
 
-    # ArcSinh 変換
-    X_neg_arcsinh = np.arcsinh(X_neg / cofactor)
-    X_stain_arcsinh = np.arcsinh(X_stain / cofactor)
+    def find_processed_csv(sraw_path, target_stain):
+        parts = os.path.normpath(sraw_path).split(os.sep)
+        try:
+            data_idx = parts.index("data")
+            experiment_folder = parts[data_idx + 1]
+        except (ValueError, IndexError):
+            experiment_folder = "Experiment 2026!05!21 15!59"
+            
+        from config import EXPERIMENTS, RESULTS_DIR
+        date_str = EXPERIMENTS.get(experiment_folder, "2026-05-21")
+        
+        filename = os.path.basename(sraw_path)
+        base_name = os.path.splitext(filename)[0]
+        well_id = base_name.split(' ')[0] if ' ' in base_name else base_name
+        
+        sample_label = f"{target_stain}_{well_id}"
+        pattern = os.path.join(RESULTS_DIR, date_str, sample_label, "*.csv")
+        csv_files = glob.glob(pattern)
+        csv_files = [p for p in csv_files if "scarf_embeddings" not in p]
+        if csv_files:
+            return csv_files[0]
+        return None
 
-    # Negative データで Scaler を fit し、両方に適用
-    scaler = StandardScaler()
-    X_neg_scaled = scaler.fit_transform(X_neg_arcsinh)
-    X_stain_scaled = scaler.transform(X_stain_arcsinh)
+    stain_unmixed_af = []
+    stain_unmixed_stain = []
+    
+    for sraw_path, _ in stain_pairs:
+        csv_path = find_processed_csv(sraw_path, stain_name)
+        if csv_path:
+            df_csv = pd.read_csv(csv_path)
+            if 'Unmixed_AF' in df_csv.columns and f'Unmixed_{stain_name}' in df_csv.columns:
+                stain_unmixed_af.append(df_csv['Unmixed_AF'].values)
+                stain_unmixed_stain.append(df_csv[f'Unmixed_{stain_name}'].values)
+                
+    has_unmixed = False
+    if len(stain_unmixed_af) == len(stain_pairs):
+        stain_unmixed_af = np.concatenate(stain_unmixed_af)
+        stain_unmixed_stain = np.concatenate(stain_unmixed_stain)
+        af_intensity = np.arcsinh(stain_unmixed_af / cofactor)
+        stain_intensity = np.arcsinh(stain_unmixed_stain / cofactor)
+        af_label = 'Unmixed AF (ArcSinh)'
+        stain_label = f'Unmixed {stain_name} (ArcSinh)'
+        has_unmixed = True
+        print(f"  Successfully loaded unmixed intensities from processed CSVs.")
+        
+        # Calculate reference spectra directly to reconstruct AF
+        print("  Reconstructing pure Autofluorescence spectra for Stained samples...")
+        S_AF = np.median(X_neg, axis=0)
+        S_AF = S_AF / np.sum(S_AF)
+        
+        total_intensity = np.sum(X_stain, axis=1)
+        bright_cells_total = X_stain[total_intensity >= np.percentile(total_intensity, 99)]
+        S_bright_total = np.median(bright_cells_total, axis=0)
+        ratios = S_bright_total / (S_AF + 1e-9)
+        peak_idx = np.argmax(ratios)
+        
+        peak_values = X_stain[:, peak_idx]
+        stained_cells = X_stain[peak_values >= np.percentile(peak_values, 98)]
+        S_Stain = np.median(stained_cells, axis=0)
+        S_Stain = np.maximum(S_Stain - (S_AF * np.min(S_Stain / (S_AF + 1e-9))), 0)
+        S_Stain = S_Stain / np.sum(S_Stain)
+        
+        # Subtract PI component from raw spectra
+        X_to_umap = X_stain - stain_unmixed_stain[:, None] * S_Stain[None, :]
+        X_to_umap = np.maximum(X_to_umap, 0)
+    else:
+        print("  Warning: Unmixed CSV data not found for all samples. Falling back to raw spectra.")
+        X_to_umap = X_stain
+        
+        stain_col = None
+        for col in df_stain_fcs.columns:
+            if stain_name.lower() in col.lower() and 'area' in col.lower():
+                stain_col = col
+                break
 
-    print(f"  Scaler fitted on Negative data (mean, std per channel)")
+        if stain_col is not None:
+            stain_intensity = np.arcsinh(df_stain_fcs[stain_col].values / cofactor)
+            stain_label = f'{stain_col} (ArcSinh)'
+        else:
+            stain_intensity = np.arcsinh(X_stain.mean(axis=1) / cofactor)
+            stain_label = 'Mean Spectral Intensity (ArcSinh)'
+            
+    vmin, vmax = np.percentile(stain_intensity, [1, 99])
 
     # =========================================================================
-    # 4. 3D UMAP (fit on Negative, transform both)
+    # 4. Preprocessing (ArcSinh + StandardScaler)
     # =========================================================================
     print(f"\n{'=' * 60}")
-    print("Step 4: Running 2D UMAP (fit on Negative, transform both)...")
+    print("Step 4: Preprocessing (ArcSinh + StandardScaler)...")
+    print("=" * 60)
+
+    X_to_umap_arcsinh = np.arcsinh(X_to_umap / cofactor)
+    scaler = StandardScaler()
+    X_to_umap_scaled = scaler.fit_transform(X_to_umap_arcsinh)
+
+    # =========================================================================
+    # 5. 2D UMAP
+    # =========================================================================
+    print(f"\n{'=' * 60}")
+    print("Step 5: Running 2D UMAP on reconstructed AF data...")
     print("=" * 60)
 
     reducer = umap.UMAP(
@@ -207,58 +231,10 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
         random_state=seed
     )
 
-    # Negative で fit + transform
-    print("  Fitting UMAP on Negative data...")
-    umap_neg = reducer.fit_transform(X_neg_scaled)
-
-    # Stained を transform
-    print(f"  Transforming {stain_name} data into Negative UMAP space...")
-    umap_stain = reducer.transform(X_stain_scaled)
+    umap_coords = reducer.fit_transform(X_to_umap_scaled)
 
     # =========================================================================
-    # 5. 蛍光強度の取得
-    # =========================================================================
-    print(f"\n{'=' * 60}")
-    print(f"Step 5: Extracting fluorescence intensity...")
-    print("=" * 60)
-
-    # FCS カラムからマーカーチャネルを検索
-    stain_col = None
-    for col in df_stain_fcs.columns:
-        if stain_name.lower() in col.lower() and 'area' in col.lower():
-            stain_col = col
-            break
-
-    if stain_col is not None:
-        stain_intensity_stain = np.arcsinh(df_stain_fcs[stain_col].values / cofactor)
-        
-        neg_stain_col = stain_col if stain_col in df_neg_fcs.columns else None
-        if neg_stain_col is None:
-            for col in df_neg_fcs.columns:
-                if stain_name.lower() in col.lower() and 'area' in col.lower():
-                    neg_stain_col = col
-                    break
-                    
-        if neg_stain_col is not None:
-            stain_intensity_neg = np.arcsinh(df_neg_fcs[neg_stain_col].values / cofactor)
-        else:
-            stain_intensity_neg = np.zeros(len(df_neg_fcs))
-            
-        stain_label = f'{stain_col} (ArcSinh)'
-        print(f"  Using FCS channel: {stain_col}")
-        
-        vmin = min(stain_intensity_neg.min(), stain_intensity_stain.min())
-        vmax = max(stain_intensity_neg.max(), stain_intensity_stain.max())
-    else:
-        # フォールバック
-        stain_intensity_stain = X_stain_arcsinh.mean(axis=1)
-        stain_intensity_neg = X_neg_arcsinh.mean(axis=1)
-        stain_label = 'Mean Spectral Intensity (ArcSinh)'
-        vmin, vmax = 0, 1
-        print(f"  Warning: '{stain_name}' channel not found in FCS. Using mean spectral intensity.")
-
-    # =========================================================================
-    # 6. Plotly 3D 可視化
+    # 6. Plotly Visualization
     # =========================================================================
     print(f"\n{'=' * 60}")
     print("Step 6: Generating interactive 2D plot...")
@@ -267,66 +243,84 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     fig = make_subplots(
         rows=1, cols=2,
         subplot_titles=(
-            f'Negative Control colored by {stain_label}',
-            f'Stained ({stain_name}) colored by {stain_label}'
+            f'Stained ({stain_name}) - Autofluorescence UMAP',
+            f'Stained ({stain_name}) - Colored by {stain_label}'
         )
     )
-
-    # --- Left panel: Negative Intensity ---
+    
+    # Left panel: Uncolored (gray) AF UMAP of the stained sample
     fig.add_trace(
         go.Scatter(
-            x=umap_neg[:, 0], y=umap_neg[:, 1],
-            mode='markers',
-            name='Negative',
+            x=umap_coords[:, 0], y=umap_coords[:, 1],
+            mode='markers', name='Autofluorescence UMAP',
             marker=dict(
-                size=3, color=stain_intensity_neg,
-                cmin=vmin, cmax=vmax,
-                colorscale='Jet', opacity=0.7,
-                colorbar=dict(title=stain_label, x=0.45)
+                size=3, color='#d3d3d3',
+                opacity=0.6
             ),
             showlegend=False
-        ),
-        row=1, col=1
+        ), row=1, col=1
     )
-
-    # --- Right panel: Stained only, colored by fluorescence intensity ---
+    
+    # Right panel: Same UMAP colored by PI
     fig.add_trace(
         go.Scatter(
-            x=umap_stain[:, 0], y=umap_stain[:, 1],
-            mode='markers',
-            name=f'{stain_name} Intensity',
+            x=umap_coords[:, 0], y=umap_coords[:, 1],
+            mode='markers', name=f'{stain_name} Intensity',
             marker=dict(
-                size=3,
-                color=stain_intensity_stain,
+                size=3, color=stain_intensity,
                 cmin=vmin, cmax=vmax,
-                colorscale='Jet',
-                opacity=0.7,
+                colorscale='bluered', opacity=0.7,
                 colorbar=dict(title=stain_label, x=1.0)
             ),
             showlegend=False
-        ),
-        row=1, col=2
+        ), row=1, col=2
     )
 
     fig.update_layout(
-        title=f'Autofluorescence UMAP + {stain_name} Projection',
-        width=1400,
-        height=700,
+        title=f'Reconstructed Autofluorescence UMAP + {stain_name} Projection',
+        width=1400, height=700,
         margin=dict(l=40, r=40, b=40, t=60),
-        legend=dict(
-            yanchor="top", y=0.99,
-            xanchor="left", x=0.01
-        )
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
     )
     fig.update_xaxes(title_text='UMAP 1')
     fig.update_yaxes(title_text='UMAP 2')
 
-    # 出力
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     fig.write_html(output_path)
     print(f"\n  Interactive 2D plot saved to: {output_path}")
 
-    # 一時フォルダの削除
+    # Generate Matplotlib PNG if png_output_path is specified
+    if png_output_path:
+        import matplotlib.pyplot as plt
+        plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.available else 'default')
+        fig_mpl, axes = plt.subplots(1, 2, figsize=(15, 6.5), dpi=200)
+        
+        # Left: Uncolored AF UMAP
+        axes[0].scatter(
+            umap_coords[:, 0], umap_coords[:, 1], 
+            c='#d3d3d3', s=2, alpha=0.5
+        )
+        axes[0].set_title(f'Stained ({stain_name}) - Autofluorescence UMAP\n(Uncolored)', fontsize=12, fontweight='bold', pad=10)
+        axes[0].set_xlabel('UMAP 1', fontsize=10)
+        axes[0].set_ylabel('UMAP 2', fontsize=10)
+        
+        # Right: Colored by Stain
+        sc2 = axes[1].scatter(
+            umap_coords[:, 0], umap_coords[:, 1], 
+            c=stain_intensity, vmin=vmin, vmax=vmax, cmap='coolwarm', s=2, alpha=0.5
+        )
+        axes[1].set_title(f'Stained ({stain_name}) - Target Dye Intensity\n({stain_label})', fontsize=12, fontweight='bold', pad=10)
+        axes[1].set_xlabel('UMAP 1', fontsize=10)
+        axes[1].set_ylabel('UMAP 2', fontsize=10)
+        fig_mpl.colorbar(sc2, ax=axes[1], label=stain_label)
+        
+        fig_mpl.suptitle(f'Reconstructed Autofluorescence UMAP + {stain_name} Projection', fontsize=14, fontweight='bold', y=0.98)
+        plt.tight_layout()
+        os.makedirs(os.path.dirname(png_output_path) or '.', exist_ok=True)
+        plt.savefig(png_output_path, bbox_inches='tight')
+        plt.close()
+        print(f"  Static 2D plot saved to: {png_output_path}")
+
     temp_dir = os.path.join(PROJECT_ROOT, "analysis", "results", "_temp_autofluor")
     try:
         os.rmdir(temp_dir)
@@ -348,6 +342,8 @@ def main():
                         help='染色マーカー名 (デフォルト: PI)')
     parser.add_argument('--output', type=str, default=None,
                         help='出力 HTML ファイルのパス')
+    parser.add_argument('--png-output', type=str, default=None,
+                        help='出力 PNG ファイルのパス')
     parser.add_argument('--cofactor', type=float, default=None,
                         help='ArcSinh cofactor')
     parser.add_argument('--seed', type=int, default=42,
@@ -366,7 +362,8 @@ def main():
         output_path=args.output,
         stain_name=args.stain,
         cofactor=args.cofactor,
-        seed=args.seed
+        seed=args.seed,
+        png_output_path=args.png_output
     )
 
 

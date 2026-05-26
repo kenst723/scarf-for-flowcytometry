@@ -15,6 +15,9 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 # ディレクトリ
 # ---------------------------------------------------------------------------
+SCARF_EPOCHS = 10
+SCARF_BATCH_SIZE = 128
+SCARF_LEARNING_RATE = 0.001
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "analysis", "results")
 SRC_DIR = os.path.join(PROJECT_ROOT, "src")
