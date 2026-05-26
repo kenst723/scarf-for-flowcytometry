@@ -93,10 +93,15 @@ def discover_samples():
                             if csv_files:
                                 # Use the most recent CSV (latest sorted timestamp)
                                 matched_csv = csv_files[-1]
+                                
+                                # Define new output dir in learning/result
+                                learning_dir = os.path.dirname(os.path.abspath(__file__))
+                                learning_result_dir = os.path.join(learning_dir, "result", date_str, sample_label)
+                                
                                 samples.append({
                                     'csv': matched_csv,
                                     'fcs': fcs_path,
-                                    'output_dir': result_dir,
+                                    'output_dir': learning_result_dir,
                                     'sample_label': sample_label
                                 })
                                 

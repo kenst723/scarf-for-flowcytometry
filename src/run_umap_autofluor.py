@@ -216,10 +216,10 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     umap_stain = reducer.transform(X_stain_scaled)
 
     # =========================================================================
-    # 5. PI 蛍光強度の取得
+    # 5. 蛍光強度の取得
     # =========================================================================
     print(f"\n{'=' * 60}")
-    print(f"Step 5: Extracting {stain_name} fluorescence intensity...")
+    print(f"Step 5: Extracting fluorescence intensity...")
     print("=" * 60)
 
     # FCS カラムからマーカーチャネルを検索
@@ -230,13 +230,31 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
             break
 
     if stain_col is not None:
-        stain_intensity = np.arcsinh(df_stain_fcs[stain_col].values / cofactor)
+        stain_intensity_stain = np.arcsinh(df_stain_fcs[stain_col].values / cofactor)
+        
+        neg_stain_col = stain_col if stain_col in df_neg_fcs.columns else None
+        if neg_stain_col is None:
+            for col in df_neg_fcs.columns:
+                if stain_name.lower() in col.lower() and 'area' in col.lower():
+                    neg_stain_col = col
+                    break
+                    
+        if neg_stain_col is not None:
+            stain_intensity_neg = np.arcsinh(df_neg_fcs[neg_stain_col].values / cofactor)
+        else:
+            stain_intensity_neg = np.zeros(len(df_neg_fcs))
+            
         stain_label = f'{stain_col} (ArcSinh)'
         print(f"  Using FCS channel: {stain_col}")
+        
+        vmin = min(stain_intensity_neg.min(), stain_intensity_stain.min())
+        vmax = max(stain_intensity_neg.max(), stain_intensity_stain.max())
     else:
-        # フォールバック: スペクトルデータの全チャネル平均
-        stain_intensity = X_stain_arcsinh.mean(axis=1)
+        # フォールバック
+        stain_intensity_stain = X_stain_arcsinh.mean(axis=1)
+        stain_intensity_neg = X_neg_arcsinh.mean(axis=1)
         stain_label = 'Mean Spectral Intensity (ArcSinh)'
+        vmin, vmax = 0, 1
         print(f"  Warning: '{stain_name}' channel not found in FCS. Using mean spectral intensity.")
 
     # =========================================================================
@@ -249,31 +267,24 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     fig = make_subplots(
         rows=1, cols=2,
         subplot_titles=(
-            f'Negative + {stain_name} (Sample Type)',
-            f'{stain_name} colored by {stain_label}'
+            f'Negative Control colored by {stain_label}',
+            f'Stained ({stain_name}) colored by {stain_label}'
         )
     )
 
-    # --- Left panel: Negative (gray) + Stained (colored by sample type) ---
-    # Negative points
+    # --- Left panel: Negative Intensity ---
     fig.add_trace(
         go.Scatter(
             x=umap_neg[:, 0], y=umap_neg[:, 1],
             mode='markers',
             name='Negative',
-            marker=dict(size=3, color='gray', opacity=0.3),
-            showlegend=True
-        ),
-        row=1, col=1
-    )
-    # Stained points
-    fig.add_trace(
-        go.Scatter(
-            x=umap_stain[:, 0], y=umap_stain[:, 1],
-            mode='markers',
-            name=stain_name,
-            marker=dict(size=3, color='red', opacity=0.5),
-            showlegend=True
+            marker=dict(
+                size=3, color=stain_intensity_neg,
+                cmin=vmin, cmax=vmax,
+                colorscale='Jet', opacity=0.7,
+                colorbar=dict(title=stain_label, x=0.45)
+            ),
+            showlegend=False
         ),
         row=1, col=1
     )
@@ -286,7 +297,8 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
             name=f'{stain_name} Intensity',
             marker=dict(
                 size=3,
-                color=stain_intensity,
+                color=stain_intensity_stain,
+                cmin=vmin, cmax=vmax,
                 colorscale='Jet',
                 opacity=0.7,
                 colorbar=dict(title=stain_label, x=1.0)

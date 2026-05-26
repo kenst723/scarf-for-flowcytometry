@@ -20,11 +20,12 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 import config
-from config import get_experiment_data_dir, get_results_dir, find_sraw_files, EXPERIMENTS
+from config import get_experiment_data_dir, get_results_dir, find_sraw_files, EXPERIMENTS, RESULTS_DIR
 from src.convert import convert_sraw_to_csv
 from src.plot_spectral import plot_spectral_density
 from src.plot_histogram import plot_histogram
 from src.run_umap_autofluor import run_umap_autofluor
+from src.unmix_spectral import run_unmixing_group
 
 
 def run_pipeline(experiment_folder, rack_name, stain_name):
@@ -95,21 +96,27 @@ def run_pipeline(experiment_folder, rack_name, stain_name):
         # UMAP is now handled collectively at the end of the pipeline
         print()
 
-    # --- Group-level Autofluor UMAP ---
+    # --- Group-level Autofluor UMAP and Unmixing ---
     if stain_name.lower() != 'negative':
         neg_dir = os.path.join(get_experiment_data_dir(experiment_folder), rack_name, "Negative")
         if os.path.isdir(neg_dir):
-            print(f"\n{'=' * 70}")
-            print(f"Generating Autofluor UMAP projection for '{stain_name}' group...")
-            
+            print(f"\n[Group Pipeline] Running Autofluor UMAP projection and Spectral Unmixing for {stain_name}...")
             date_str = EXPERIMENTS.get(experiment_folder, experiment_folder)
-            results_base = os.path.join(config.RESULTS_DIR, date_str)
-            os.makedirs(results_base, exist_ok=True)
-            output_path = os.path.join(results_base, f"autofluor_umap_{stain_name}.html")
+            results_base_dir = os.path.join(RESULTS_DIR, date_str)
             
-            run_umap_autofluor(neg_dir, sraw_dir, output_path, stain_name=stain_name)
+            # 1. Unmixing
+            print("  -> Performing Spectral Unmixing...")
+            run_unmixing_group(results_base_dir=results_base_dir, stain_name=stain_name)
+            
+            # 2. Autofluor UMAP
+            print("  -> Generating Group UMAP...")
+            try:
+                output_path = os.path.join(results_base_dir, f"autofluor_umap_{stain_name}.html")
+                run_umap_autofluor(neg_dir, sraw_dir, output_path, stain_name=stain_name)
+            except Exception as e:
+                print(f"  Warning: UMAP projection failed: {e}")
         else:
-            print(f"\nSkipping Autofluor UMAP: Negative directory not found at {neg_dir}")
+            print(f"\nWarning: Could not find Negative directory at {neg_dir}. Skipping group UMAP and Unmixing.")
 
     print("Pipeline complete!")
 
