@@ -1,15 +1,15 @@
 """
-自家蛍光 UMAP + マーカー投影 (3D Plotly)
+自家蛍光 UMAP + マーカー投影 (2D Plotly)
 
 ネガティブコントロール（無染色）のスペクトルデータで UMAP 座標系を学習し、
-マーカー染色サンプルをその空間に投影して蛍光強度で色付けした 3D プロットを生成する。
+マーカー染色サンプルをその空間に投影して蛍光強度で色付けした 2D プロットを生成する。
 
 Usage:
     python -m src.run_umap_autofluor \
         --neg-dir "data/Experiment 2026!05!21 15!59/24 Tube Rack (5mL) - 1/Negative" \
         --stain-dir "data/Experiment 2026!05!21 15!59/24 Tube Rack (5mL) - 1/PI" \
         --stain PI \
-        --output "results/2026-05-21/autofluor_umap_3d.html"
+        --output "results/2026-05-21/autofluor_umap.html"
 """
 
 import os
@@ -196,11 +196,11 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     # 4. 3D UMAP (fit on Negative, transform both)
     # =========================================================================
     print(f"\n{'=' * 60}")
-    print("Step 4: Running 3D UMAP (fit on Negative, transform both)...")
+    print("Step 4: Running 2D UMAP (fit on Negative, transform both)...")
     print("=" * 60)
 
     reducer = umap.UMAP(
-        n_components=3,
+        n_components=2,
         n_neighbors=15,
         min_dist=0.3,
         metric='euclidean',
@@ -243,12 +243,11 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     # 6. Plotly 3D 可視化
     # =========================================================================
     print(f"\n{'=' * 60}")
-    print("Step 6: Generating interactive 3D plot...")
+    print("Step 6: Generating interactive 2D plot...")
     print("=" * 60)
 
     fig = make_subplots(
         rows=1, cols=2,
-        specs=[[{'type': 'scatter3d'}, {'type': 'scatter3d'}]],
         subplot_titles=(
             f'Negative + {stain_name} (Sample Type)',
             f'{stain_name} colored by {stain_label}'
@@ -258,22 +257,22 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     # --- Left panel: Negative (gray) + Stained (colored by sample type) ---
     # Negative points
     fig.add_trace(
-        go.Scatter3d(
-            x=umap_neg[:, 0], y=umap_neg[:, 1], z=umap_neg[:, 2],
+        go.Scatter(
+            x=umap_neg[:, 0], y=umap_neg[:, 1],
             mode='markers',
             name='Negative',
-            marker=dict(size=2, color='gray', opacity=0.3),
+            marker=dict(size=3, color='gray', opacity=0.3),
             showlegend=True
         ),
         row=1, col=1
     )
     # Stained points
     fig.add_trace(
-        go.Scatter3d(
-            x=umap_stain[:, 0], y=umap_stain[:, 1], z=umap_stain[:, 2],
+        go.Scatter(
+            x=umap_stain[:, 0], y=umap_stain[:, 1],
             mode='markers',
             name=stain_name,
-            marker=dict(size=2, color='red', opacity=0.5),
+            marker=dict(size=3, color='red', opacity=0.5),
             showlegend=True
         ),
         row=1, col=1
@@ -281,12 +280,12 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
 
     # --- Right panel: Stained only, colored by fluorescence intensity ---
     fig.add_trace(
-        go.Scatter3d(
-            x=umap_stain[:, 0], y=umap_stain[:, 1], z=umap_stain[:, 2],
+        go.Scatter(
+            x=umap_stain[:, 0], y=umap_stain[:, 1],
             mode='markers',
             name=f'{stain_name} Intensity',
             marker=dict(
-                size=2,
+                size=3,
                 color=stain_intensity,
                 colorscale='Jet',
                 opacity=0.7,
@@ -298,20 +297,22 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     )
 
     fig.update_layout(
-        title=f'Autofluorescence UMAP + {stain_name} Projection (3D)',
-        width=1600,
-        height=800,
-        margin=dict(l=0, r=0, b=0, t=60),
+        title=f'Autofluorescence UMAP + {stain_name} Projection',
+        width=1400,
+        height=700,
+        margin=dict(l=40, r=40, b=40, t=60),
         legend=dict(
             yanchor="top", y=0.99,
             xanchor="left", x=0.01
         )
     )
+    fig.update_xaxes(title_text='UMAP 1')
+    fig.update_yaxes(title_text='UMAP 2')
 
     # 出力
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     fig.write_html(output_path)
-    print(f"\n  Interactive 3D plot saved to: {output_path}")
+    print(f"\n  Interactive 2D plot saved to: {output_path}")
 
     # 一時フォルダの削除
     temp_dir = os.path.join(PROJECT_ROOT, "results", "_temp_autofluor")
@@ -345,7 +346,7 @@ def main():
     if args.output is None:
         results_dir = os.path.join(PROJECT_ROOT, "results")
         os.makedirs(results_dir, exist_ok=True)
-        args.output = os.path.join(results_dir, f"autofluor_umap_3d_{args.stain}.html")
+        args.output = os.path.join(results_dir, f"autofluor_umap_{args.stain}.html")
 
     run_umap_autofluor(
         neg_dir=args.neg_dir,
