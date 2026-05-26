@@ -51,7 +51,6 @@ class MLP(torch.nn.Sequential):
             
         for _ in range(num_hidden - 1):
             layers.append(nn.Linear(in_dim, hidden_dim))
-            layers.append(nn.BatchNorm1d(hidden_dim))
             layers.append(nn.ReLU(inplace=True))
             layers.append(nn.Dropout(dropout))
             in_dim = hidden_dim
