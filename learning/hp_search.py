@@ -71,7 +71,7 @@ def train_one_config(X_scaled, num_frequencies, sigma, epochs=50,
                      batch_size=32, lr=0.001, temperature=1.0,
                      dim_hidden_encoder=16, num_hidden_encoder=4,
                      dim_hidden_head=16, num_hidden_head=2,
-                     corruption_rate=0.6, dropout=0.0):
+                     corruption_rate=0.6, dropout=0.0, embedding_dim=16):
     """Train SCARF with a specific (k, σ) and return final loss."""
     dummy_targets = np.zeros(len(X_scaled))
     dataset = SCARFDataset(X_scaled, dummy_targets)
@@ -96,7 +96,8 @@ def train_one_config(X_scaled, num_frequencies, sigma, epochs=50,
         corruption_rate=corruption_rate,
         dropout=dropout,
         num_frequencies=num_frequencies,
-        sigma=sigma
+        sigma=sigma,
+        embedding_dim=embedding_dim
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
@@ -151,6 +152,7 @@ def run_search(X_full, n_iterations=100, subset_ratio=0.01, search_epochs=50,
         lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
         corruption_rate = trial.suggest_float('corruption_rate', 0.1, 0.8)
         dropout = trial.suggest_float('dropout', 0.0, 0.5)
+        embedding_dim = trial.suggest_categorical('embedding_dim', [8, 16, 24, 32, 64])
 
         try:
             final_loss = train_one_config(
@@ -160,6 +162,7 @@ def run_search(X_full, n_iterations=100, subset_ratio=0.01, search_epochs=50,
                 lr=lr,
                 corruption_rate=corruption_rate,
                 dropout=dropout,
+                embedding_dim=embedding_dim,
                 epochs=search_epochs,
                 batch_size=32,
             )
@@ -184,7 +187,7 @@ def run_search(X_full, n_iterations=100, subset_ratio=0.01, search_epochs=50,
     print(f"=== Search Complete ===")
     print(f"{'='*60}")
     print(f"\nTop 10 configurations:")
-    cols_to_show = ['number', 'params_k', 'params_sigma', 'params_lr', 'params_corruption_rate', 'params_dropout', 'value', 'duration']
+    cols_to_show = ['number', 'params_k', 'params_sigma', 'params_lr', 'params_corruption_rate', 'params_dropout', 'params_embedding_dim', 'value', 'duration']
     print(df_results[cols_to_show].head(10).to_string(index=False))
 
     best_trial = study.best_trial
@@ -193,6 +196,7 @@ def run_search(X_full, n_iterations=100, subset_ratio=0.01, search_epochs=50,
     best_lr = best_trial.params['lr']
     best_cr = best_trial.params['corruption_rate']
     best_do = best_trial.params['dropout']
+    best_ed = best_trial.params['embedding_dim']
 
     print(f"\n{'='*60}")
     print(f"★ Best configuration:")
@@ -201,10 +205,11 @@ def run_search(X_full, n_iterations=100, subset_ratio=0.01, search_epochs=50,
     print(f"   lr                  = {best_lr:.5f}")
     print(f"   corruption_rate     = {best_cr:.3f}")
     print(f"   dropout             = {best_do:.3f}")
+    print(f"   embedding_dim       = {best_ed}")
     print(f"   Loss                = {best_trial.value}")
     print(f"{'='*60}")
     print(f"\nRun full training with best params:")
-    print(f"  python -m learning.scarf --num-frequencies {best_k} --sigma {best_sigma} --lr {best_lr} --corruption-rate {best_cr} --dropout {best_do} --epochs 200")
+    print(f"  python -m learning.scarf --num-frequencies {best_k} --sigma {best_sigma} --lr {best_lr} --corruption-rate {best_cr} --dropout {best_do} --embedding-dim {best_ed} --epochs 200")
 
     # Save results CSV
     scarf_dir = os.path.dirname(os.path.abspath(__file__))

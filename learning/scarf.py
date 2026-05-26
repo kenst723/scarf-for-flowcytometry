@@ -49,7 +49,7 @@ def run_scarf_pipeline(csv_path, fcs_path, output_dir, cofactor=None,
                        epochs=200, batch_size=128, lr=0.001, temperature=1.0,
                        dim_hidden_encoder=16, num_hidden_encoder=4,
                        dim_hidden_head=16, num_hidden_head=2,
-                       corruption_rate=0.6, dropout=0.0, num_frequencies=4, sigma=1.0, seed=42, sample_label=None):
+                       corruption_rate=0.6, dropout=0.0, num_frequencies=4, sigma=1.0, embedding_dim=16, seed=42, sample_label=None):
     """
     Train SCARF on spectral + scatter data and save embeddings to a CSV file.
     """
@@ -123,7 +123,8 @@ def run_scarf_pipeline(csv_path, fcs_path, output_dir, cofactor=None,
         corruption_rate=corruption_rate,
         dropout=dropout,
         num_frequencies=num_frequencies,
-        sigma=sigma
+        sigma=sigma,
+        embedding_dim=embedding_dim
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
@@ -275,6 +276,7 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.0, help='Dropout probability')
     parser.add_argument('--num-frequencies', type=int, default=4, help='Number of frequencies for Periodic Encoding')
     parser.add_argument('--sigma', type=float, default=1.0, help='Standard deviation for frequency initialization')
+    parser.add_argument('--embedding-dim', type=int, default=16, help='Embedding dimension d for each numerical feature in PLR')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     
     args = parser.parse_args()
@@ -327,6 +329,7 @@ def main():
             dropout=args.dropout,
             num_frequencies=args.num_frequencies,
             sigma=args.sigma,
+            embedding_dim=args.embedding_dim,
             seed=args.seed,
             sample_label=sample_label
         )
@@ -365,6 +368,7 @@ def main():
                 dropout=args.dropout,
                 num_frequencies=args.num_frequencies,
                 sigma=args.sigma,
+                embedding_dim=args.embedding_dim,
                 seed=args.seed,
                 sample_label=sample['sample_label']
             )
