@@ -24,8 +24,7 @@ from config import get_experiment_data_dir, get_results_dir, find_sraw_files, EX
 from src.convert import convert_sraw_to_csv
 from src.plot_spectral import plot_spectral_density
 from src.plot_histogram import plot_histogram
-from src.run_umap import run_umap_analysis
-from src.run_umap_3d import run_umap_analysis_3d
+from src.run_umap_autofluor import run_umap_autofluor
 
 
 def run_pipeline(experiment_folder, rack_name, stain_name):
@@ -93,18 +92,24 @@ def run_pipeline(experiment_folder, rack_name, stain_name):
         else:
             print(f"  (Histogram skipped — .fcs file not found: {fcs_path})")
 
-        # --- Step 4: UMAP ---
-        if has_fcs:
-            print(f"[4/{total_steps}] Running UMAP analysis (2D & 3D) ...")
-            umap_path = os.path.join(result_dir, 'umap.png')
-            run_umap_analysis(csv_path, fcs_path, umap_path, stain_name=stain_name)
-            
-            umap_3d_path = os.path.join(result_dir, 'umap_3d.html')
-            run_umap_analysis_3d(csv_path, fcs_path, umap_3d_path, stain_name=stain_name)
-        else:
-            print(f"  (UMAP skipped — .fcs file not found: {fcs_path})")
-
+        # UMAP is now handled collectively at the end of the pipeline
         print()
+
+    # --- Group-level Autofluor UMAP ---
+    if stain_name.lower() != 'negative':
+        neg_dir = os.path.join(get_experiment_data_dir(experiment_folder), rack_name, "Negative")
+        if os.path.isdir(neg_dir):
+            print(f"\n{'=' * 70}")
+            print(f"Generating Autofluor UMAP projection for '{stain_name}' group...")
+            
+            date_str = EXPERIMENTS.get(experiment_folder, experiment_folder)
+            results_base = os.path.join(config.RESULTS_DIR, date_str)
+            os.makedirs(results_base, exist_ok=True)
+            output_path = os.path.join(results_base, f"autofluor_umap_{stain_name}.html")
+            
+            run_umap_autofluor(neg_dir, sraw_dir, output_path, stain_name=stain_name)
+        else:
+            print(f"\nSkipping Autofluor UMAP: Negative directory not found at {neg_dir}")
 
     print("Pipeline complete!")
 
