@@ -8,7 +8,7 @@
 4. UMAP 次元圧縮解析（対応する .fcs ファイルがある場合）
 
 Usage:
-    python run_pipeline.py --experiment "Experiment 2026!05!21 15!59" --rack "24 Tube Rack (5mL) - 1" --stain PI
+    python run_pipeline.py --experiment "Experiment 2026!05!27 9!30" --rack "24 Tube Rack (5mL) - 1" --stain Calcein
 """
 
 import os
@@ -27,6 +27,58 @@ from src.plot_histogram import plot_histogram
 from src.run_umap_autofluor import run_umap_autofluor
 from src.unmix_spectral import run_unmixing_group
 
+
+def generate_markdown_report(results_base_dir, stain_name, sraw_files):
+    """
+    パイプラインで生成された各プロットをMarkdownファイルにまとめます。
+    """
+    report_path = os.path.join(results_base_dir, f"pipeline_report_{stain_name}.md")
+    lines = [f"# Pipeline Report: {stain_name}", ""]
+    
+    # 1. Group UMAP
+    umap_png = f"autofluor_umap_{stain_name}.png"
+    umap_html = f"autofluor_umap_{stain_name}.html"
+    
+    if os.path.exists(os.path.join(results_base_dir, umap_png)):
+        lines.append("## Group Autofluor UMAP")
+        lines.append(f"[Interactive HTML Report]({umap_html})\n")
+        lines.append(f"![UMAP Plot]({umap_png})\n")
+        lines.append("---")
+        
+    # 2. Individual Samples
+    lines.append("## Individual Sample Results")
+    for filepath in sraw_files:
+        filename = os.path.basename(filepath)
+        base_name = os.path.splitext(filename)[0]
+        well_id = base_name.split(' ')[0] if ' ' in base_name else base_name
+        sample_label = f"{stain_name}_{well_id}"
+        
+        lines.append(f"### Sample: {sample_label}")
+        
+        # Spectral Density
+        spectral_png = f"{sample_label}/spectral_density.png"
+        if os.path.exists(os.path.join(results_base_dir, spectral_png)):
+            lines.append("#### Spectral Density")
+            lines.append(f"![Spectral Density]({spectral_png})\n")
+            
+        # Histogram
+        hist_png = f"{sample_label}/histogram.png"
+        if os.path.exists(os.path.join(results_base_dir, hist_png)):
+            lines.append("#### Fluorescence Histogram")
+            lines.append(f"![Histogram]({hist_png})\n")
+            
+        # Unmixing Scatter
+        unmix_png = f"{sample_label}/unmixing_scatter.png"
+        if os.path.exists(os.path.join(results_base_dir, unmix_png)):
+            lines.append("#### Spectral Unmixing")
+            lines.append(f"![Unmixing Scatter]({unmix_png})\n")
+            
+        lines.append("---\n")
+        
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+        
+    print(f"\nMarkdown Report generated: {report_path}")
 
 def run_pipeline(experiment_folder, rack_name, stain_name):
     """
@@ -97,12 +149,13 @@ def run_pipeline(experiment_folder, rack_name, stain_name):
         print()
 
     # --- Group-level Autofluor UMAP and Unmixing ---
+    date_str = EXPERIMENTS.get(experiment_folder, experiment_folder)
+    results_base_dir = os.path.join(RESULTS_DIR, date_str)
+
     if stain_name.lower() != 'negative':
         neg_dir = os.path.join(get_experiment_data_dir(experiment_folder), rack_name, "Negative")
         if os.path.isdir(neg_dir):
             print(f"\n[Group Pipeline] Running Autofluor UMAP projection and Spectral Unmixing for {stain_name}...")
-            date_str = EXPERIMENTS.get(experiment_folder, experiment_folder)
-            results_base_dir = os.path.join(RESULTS_DIR, date_str)
             
             # 1. Unmixing
             print("  -> Performing Spectral Unmixing...")
@@ -119,7 +172,11 @@ def run_pipeline(experiment_folder, rack_name, stain_name):
         else:
             print(f"\nWarning: Could not find Negative directory at {neg_dir}. Skipping group UMAP and Unmixing.")
 
-    print("Pipeline complete!")
+    # --- Generate Markdown Report ---
+    print("\n[Report] Generating Markdown overview...")
+    generate_markdown_report(results_base_dir, stain_name, sraw_files)
+
+    print("\nPipeline complete!")
 
 
 def main():
