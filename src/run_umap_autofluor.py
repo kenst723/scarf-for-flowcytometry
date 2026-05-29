@@ -130,7 +130,7 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
             experiment_folder = "Experiment 2026!05!21 15!59"
             
         from config import EXPERIMENTS, RESULTS_DIR
-        date_str = EXPERIMENTS.get(experiment_folder, "2026-05-21")
+        date_str = EXPERIMENTS.get(experiment_folder, experiment_folder)
         
         filename = os.path.basename(sraw_path)
         base_name = os.path.splitext(filename)[0]
@@ -141,6 +141,7 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
         csv_files = glob.glob(pattern)
         csv_files = [p for p in csv_files if "scarf_embeddings" not in p]
         if csv_files:
+            csv_files.sort(reverse=True)  # Get the most recent file by timestamp in filename
             return csv_files[0]
         return None
 
@@ -167,24 +168,13 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
         print(f"  Successfully loaded unmixed intensities from processed CSVs.")
         
         # Calculate reference spectra directly to reconstruct AF
-        print("  Reconstructing pure Autofluorescence spectra for Stained samples...")
-        S_AF = np.median(X_neg, axis=0)
-        S_AF = S_AF / np.sum(S_AF)
+        print("  Reconstructing pure Autofluorescence spectra for Stained samples using PoissonUnmixer...")
+        from src.unmix_spectral import PoissonUnmixer
+        unmixer = PoissonUnmixer()
+        unmixer.fit(X_neg, X_stain)
         
-        total_intensity = np.sum(X_stain, axis=1)
-        bright_cells_total = X_stain[total_intensity >= np.percentile(total_intensity, 99)]
-        S_bright_total = np.median(bright_cells_total, axis=0)
-        ratios = S_bright_total / (S_AF + 1e-9)
-        peak_idx = np.argmax(ratios)
-        
-        peak_values = X_stain[:, peak_idx]
-        stained_cells = X_stain[peak_values >= np.percentile(peak_values, 98)]
-        S_Stain = np.median(stained_cells, axis=0)
-        S_Stain = np.maximum(S_Stain - (S_AF * np.min(S_Stain / (S_AF + 1e-9))), 0)
-        S_Stain = S_Stain / np.sum(S_Stain)
-        
-        # Subtract PI component from raw spectra
-        X_to_umap = X_stain - stain_unmixed_stain[:, None] * S_Stain[None, :]
+        # Subtract stain component from raw spectra using the refined S_Stain
+        X_to_umap = X_stain - stain_unmixed_stain[:, None] * unmixer.S_Stain[None, :]
         X_to_umap = np.maximum(X_to_umap, 0)
     else:
         print("  Warning: Unmixed CSV data not found for all samples. Falling back to raw spectra.")
