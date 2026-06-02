@@ -14,6 +14,7 @@ Usage:
 import os
 import sys
 import argparse
+import glob
 
 # Add project root to sys.path to allow importing 'config' and 'src'
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +27,7 @@ from src.plot_spectral import plot_spectral_density
 from src.plot_histogram import plot_histogram
 from src.run_umap_autofluor import run_umap_autofluor
 from src.unmix_spectral import run_unmixing_group
+from src.plot_unmixing_comparison import plot_unmixing_comparison, find_csv_in_dir
 
 
 def generate_markdown_report(results_base_dir, stain_name, sraw_files):
@@ -72,6 +74,12 @@ def generate_markdown_report(results_base_dir, stain_name, sraw_files):
         if os.path.exists(os.path.join(results_base_dir, unmix_png)):
             lines.append("#### Spectral Unmixing")
             lines.append(f"![Unmixing Scatter]({unmix_png})\n")
+            
+        # Unmixing Comparison
+        comparison_png = f"{sample_label}/unmixing_comparison_{stain_name}.png"
+        if os.path.exists(os.path.join(results_base_dir, comparison_png)):
+            lines.append("#### Spectral Unmixing Comparison")
+            lines.append(f"![Unmixing Comparison]({comparison_png})\n")
             
         lines.append("---\n")
         
@@ -160,6 +168,16 @@ def run_pipeline(experiment_folder, rack_name, stain_name):
             # 1. Unmixing
             print("  -> Performing Spectral Unmixing...")
             run_unmixing_group(results_base_dir=results_base_dir, stain_name=stain_name)
+            
+            # 1.5 Unmixing Comparison Plot
+            print("  -> Generating Unmixing Comparison Plots...")
+            neg_csv = find_csv_in_dir(results_base_dir, "Negative")
+            if neg_csv:
+                stain_csv_pattern = os.path.join(results_base_dir, f"{stain_name}_*", "*.csv")
+                stain_csvs = sorted(list(set([p for p in glob.glob(stain_csv_pattern) if "scarf_embeddings" not in p])))
+                for stain_csv in stain_csvs:
+                    comp_out = os.path.join(os.path.dirname(stain_csv), f"unmixing_comparison_{stain_name}.png")
+                    plot_unmixing_comparison(neg_csv, stain_csv, comp_out, stain_name=stain_name)
             
             # 2. Autofluor UMAP
             print("  -> Generating Group UMAP...")

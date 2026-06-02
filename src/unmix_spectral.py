@@ -27,35 +27,85 @@ def save_unmixing_plot(af_vals, stain_vals, stain_name, plot_path, title):
     plt.close()
 
 class PoissonUnmixer:
-    def __init__(self, max_iter=5, tol=1e-4):
+    """スペクトルアンミキシング: 自家蛍光(AF)と蛍光色素を分離する.
+
+    Parameters
+    ----------
+    max_iter : int
+        参照スペクトル精製およびIRLS内部の最大反復回数.
+    tol : float
+        参照スペクトル精製の収束判定閾値 (S_Stain の最大変化量).
+    method : str
+        アンミキシング手法. 'poisson' (IRLS, デフォルト) or 'ols' (旧方式).
+    irls_iter : int
+        ポアソンIRLS内部の反復回数 (method='poisson' のみ).
+    """
+    def __init__(self, max_iter=5, tol=1e-4, method='poisson', irls_iter=3):
         self.max_iter = max_iter
         self.tol = tol
+        self.method = method
+        self.irls_iter = irls_iter
         self.S_AF = None
         self.S_Stain = None
         self.S = None
         self.slope = 0.0
         self.bg = 0.0
+        self._tail_mask = None
+        self._peak_mask = None
+
+    def _compute_channel_masks(self):
+        """S_Stain の値に基づいてテール領域とピーク領域のマスクを動的に決定する.
+
+        テール領域: S_Stain が最大値の 5% 未満のチャンネル (色素の発光が無視できる領域)
+        ピーク領域: S_Stain が最大値の 30% 以上のチャンネル (色素の発光が強い領域)
+
+        テール領域が 4 チャンネル未満の場合は末尾 8 チャンネルにフォールバックする.
+        """
+        S_Stain = self.S_Stain
+        S_AF = self.S_AF
+
+        # ピーク領域: S_Stain が最大値の 30% 以上
+        stain_threshold = 0.3 * np.max(S_Stain)
+        self._peak_mask = S_Stain >= stain_threshold
+
+        # テール領域: S_Stain が最大値の 5% 未満 (色素の寄与が無視できる)
+        tail_candidates = S_Stain < 0.05 * np.max(S_Stain)
+        if np.sum(tail_candidates) >= 4:
+            self._tail_mask = tail_candidates
+        else:
+            # フォールバック: 末尾 8 チャンネル
+            self._tail_mask = np.zeros(len(S_AF), dtype=bool)
+            self._tail_mask[-8:] = True
 
     def fit(self, X_neg, X_stain):
+        """ネガティブコントロールと染色サンプルから参照スペクトルを学習する.
+
+        Parameters
+        ----------
+        X_neg : ndarray, shape (n_neg, n_channels)
+            ネガティブコントロール(未染色)のスペクトルデータ.
+        X_stain : ndarray, shape (n_stain, n_channels)
+            染色サンプルのスペクトルデータ.
+        """
         # 1. Autofluorescence (AF) Reference
         self.S_AF = np.median(X_neg, axis=0)
         self.S_AF = self.S_AF / (np.sum(self.S_AF) + 1e-9)
-        
-        # 2. Stain Reference
+
+        # 2. Stain Reference — 初期推定
         total_intensity = np.sum(X_stain, axis=1)
         bright_cells_total = X_stain[total_intensity >= np.percentile(total_intensity, 99)]
         if len(bright_cells_total) == 0:
             bright_cells_total = X_stain
-            
+
         S_bright_total = np.median(bright_cells_total, axis=0)
         ratios = S_bright_total / (self.S_AF + 1e-9)
         peak_idx = np.argmax(ratios)
-        
+
         peak_values = X_stain[:, peak_idx]
         stained_cells = X_stain[peak_values >= np.percentile(peak_values, 98)]
         if len(stained_cells) == 0:
             stained_cells = X_stain
-            
+
         # ====== S_Stain estimation: iterative refinement ======
         # Step A: Initial rough S_Stain (simple subtraction, top 2% bright cells)
         S_AF_unnorm = np.median(X_neg, axis=0)
@@ -65,98 +115,172 @@ class PoissonUnmixer:
         S_Stain_init = S_Stain_init / (np.sum(S_Stain_init) + 1e-9)
         self.S_Stain = S_Stain_init
         self.S = np.column_stack((self.S_AF, self.S_Stain))
-        
-        # Step B: Run sequential unmixing with rough S_Stain on ALL stained cells
-        C_init = self._unmix_sequential(X_stain)
-        c_af_all = C_init[:, 0]
-        c_stain_all = C_init[:, 1]
-        
-        # Step C: Refine S_Stain using fitted coefficients
-        # For cells with significant Calcein (c_stain > 0), compute:
-        #   S_Stain_i = (X_i - c_af_i * S_AF) / c_stain_i
-        # Then take the median across cells
-        valid = c_stain_all > np.percentile(c_stain_all, 50)  # use top 50% by c_stain
-        X_valid = X_stain[valid]
-        c_af_valid = c_af_all[valid]
-        c_stain_valid = c_stain_all[valid]
-        
-        # Compute per-cell stain spectrum estimate
-        residuals = X_valid - c_af_valid[:, None] * self.S_AF[None, :]
-        per_cell_stain = residuals / (c_stain_valid[:, None] + 1e-9)
-        
-        S_Stain = np.median(per_cell_stain, axis=0)
-        S_Stain = np.maximum(S_Stain, 0)
-        self.S_Stain = S_Stain / (np.sum(S_Stain) + 1e-9)
-        
-        self.S = np.column_stack((self.S_AF, self.S_Stain))
-        
+        self._compute_channel_masks()
+
+        # Step B & C: Iterative refinement of S_Stain using max_iter/tol
+        for iteration in range(self.max_iter):
+            # Unmix all stained cells with current S_Stain
+            C = self._unmix(X_stain)
+            c_af_all = C[:, 0]
+            c_stain_all = C[:, 1]
+
+            # Select cells with significant stain signal (top 50% by c_stain)
+            valid = c_stain_all > np.percentile(c_stain_all, 50)
+            X_valid = X_stain[valid]
+            c_af_valid = c_af_all[valid]
+            c_stain_valid = c_stain_all[valid]
+
+            # Compute per-cell stain spectrum estimate:
+            #   S_Stain_i = (X_i - c_af_i * S_AF) / c_stain_i
+            residuals = X_valid - c_af_valid[:, None] * self.S_AF[None, :]
+            per_cell_stain = residuals / (c_stain_valid[:, None] + 1e-9)
+
+            S_Stain_new = np.median(per_cell_stain, axis=0)
+            S_Stain_new = np.maximum(S_Stain_new, 0)
+            S_Stain_new = S_Stain_new / (np.sum(S_Stain_new) + 1e-9)
+
+            # Convergence check
+            delta = np.max(np.abs(S_Stain_new - self.S_Stain))
+            self.S_Stain = S_Stain_new
+            self.S = np.column_stack((self.S_AF, self.S_Stain))
+            self._compute_channel_masks()
+
+            if delta < self.tol:
+                break
+
         # 3. Calculate leakage slope and background using negative control
-        C_neg = self._unmix_sequential(X_neg)
-        
+        C_neg = self._unmix(X_neg)
+
         # slopeがマイナスになるのを防ぐセーフティ
         raw_slope = C_neg[:, 1].mean() / (C_neg[:, 0].mean() + 1e-9)
         self.slope = max(raw_slope, 0.0)
-        
+
         C_no_slope = C_neg[:, 1] - self.slope * C_neg[:, 0]
         self.bg = np.median(C_no_slope)
-        
+
         return self
 
-    def _unmix_sequential(self, X):
-        """Sequential estimation: tail→c_af, then peak→c_stain.
-        
+    def _unmix(self, X):
+        """method パラメータに応じてアンミキシング手法を切り替える."""
+        if self.method == 'poisson':
+            return self._unmix_poisson_irls(X)
+        else:
+            return self._unmix_ols_sequential(X)
+
+    def _unmix_ols_sequential(self, X):
+        """旧方式: OLS による逐次推定 (tail→c_af, peak→c_stain).
+
         Joint fitting (OLS/IRLS) over all channels is biased because
         S_AF and S_Stain overlap at 500-540nm. The Calcein peak dominates,
         causing c_af to be severely underestimated and c_stain inflated.
-        
+
         Instead:
-          1. Estimate c_af from tail channels (>650nm) where S_Stain ≈ 0
+          1. Estimate c_af from tail channels where S_Stain ≈ 0
           2. Subtract c_af * S_AF from the full spectrum
           3. Estimate c_stain from the residual at peak channels
         """
-        N = X.shape[0]
         S_AF = self.S_AF
         S_Stain = self.S_Stain
-        
-        # Channel masks (based on index into wl_features)
-        # Tail: last ~8 channels (roughly >650nm, where Calcein emission is zero)
-        # Peak: channels where S_Stain has significant signal (top channels by S_Stain value)
-        stain_threshold = 0.3 * np.max(S_Stain)  # channels with >30% of peak S_Stain
-        peak_mask = S_Stain >= stain_threshold
-        
-        # Tail: channels where S_Stain is negligible AND not in peak region
-        # Use the last 8 channels as the tail
-        tail_mask = np.zeros(len(S_AF), dtype=bool)
-        tail_mask[-8:] = True
-        
-        # Step 1: c_af from tail channels only
+        tail_mask = self._tail_mask
+        peak_mask = self._peak_mask
+
+        # Step 1: c_af from tail channels only (OLS)
         S_AF_tail = S_AF[tail_mask]
         X_tail = X[:, tail_mask]
         denom_af = np.dot(S_AF_tail, S_AF_tail) + 1e-9
         c_af = X_tail @ S_AF_tail / denom_af  # (N,)
-        
-        # Step 2: subtract AF, then estimate c_stain from peak channels
+
+        # Step 2: subtract AF, then estimate c_stain from peak channels (OLS)
         residual = X - c_af[:, None] * S_AF[None, :]  # (N, M)
         S_Stain_peak = S_Stain[peak_mask]
         R_peak = residual[:, peak_mask]
         denom_stain = np.dot(S_Stain_peak, S_Stain_peak) + 1e-9
         c_stain = R_peak @ S_Stain_peak / denom_stain  # (N,)
-        
+
+        C = np.column_stack((c_af, c_stain))
+        return C
+
+    def _unmix_poisson_irls(self, X):
+        """ポアソン IRLS による逐次推定.
+
+        逐次推定の構造 (tail→c_af, peak→c_stain) を維持しつつ、
+        各ステップでポアソンノイズモデルに基づく重み w_i = 1/(predicted_i + eps)
+        を用いた反復再重み付き最小二乗法 (IRLS) を適用する.
+
+        ポアソン分布では分散 = 期待値なので、分散の逆数で重み付けすることで
+        高信号チャンネルの過大な影響を抑え、暗い細胞のノイズ耐性を向上させる.
+        """
+        S_AF = self.S_AF
+        S_Stain = self.S_Stain
+        tail_mask = self._tail_mask
+        peak_mask = self._peak_mask
+        eps = 1.0  # ゼロ割り防止 (ポアソンの最小分散)
+
+        # ---- Step 1: c_af from tail channels (Poisson IRLS) ----
+        S_AF_tail = S_AF[tail_mask]
+        X_tail = X[:, tail_mask]  # (N, T)
+
+        # 初期推定 (OLS)
+        denom_af_init = np.dot(S_AF_tail, S_AF_tail) + 1e-9
+        c_af = X_tail @ S_AF_tail / denom_af_init  # (N,)
+
+        for _ in range(self.irls_iter):
+            # 予測値: predicted_tail = c_af * S_AF_tail
+            predicted_tail = np.maximum(c_af[:, None] * S_AF_tail[None, :], eps)  # (N, T)
+            # ポアソン重み: w = 1 / predicted (分散 = 期待値)
+            W = 1.0 / predicted_tail  # (N, T)
+
+            # 重み付き最小二乗: c_af = sum(w * X * S) / sum(w * S^2)
+            numerator = np.sum(W * X_tail * S_AF_tail[None, :], axis=1)    # (N,)
+            denominator = np.sum(W * S_AF_tail[None, :] ** 2, axis=1) + 1e-9  # (N,)
+            c_af = numerator / denominator
+
+        # ---- Step 2: c_stain from peak channels (Poisson IRLS) ----
+        # まず残差を計算
+        residual = X - c_af[:, None] * S_AF[None, :]  # (N, M)
+        S_Stain_peak = S_Stain[peak_mask]
+        R_peak = residual[:, peak_mask]  # (N, P)
+
+        # 初期推定 (OLS)
+        denom_stain_init = np.dot(S_Stain_peak, S_Stain_peak) + 1e-9
+        c_stain = R_peak @ S_Stain_peak / denom_stain_init  # (N,)
+
+        for _ in range(self.irls_iter):
+            # 予測値: predicted_peak = c_stain * S_Stain_peak
+            # (残差に対するフィットなので、predicted はステイン成分のみ)
+            predicted_peak = np.maximum(c_stain[:, None] * S_Stain_peak[None, :], eps)  # (N, P)
+            W = 1.0 / predicted_peak  # (N, P)
+
+            numerator = np.sum(W * R_peak * S_Stain_peak[None, :], axis=1)    # (N,)
+            denominator = np.sum(W * S_Stain_peak[None, :] ** 2, axis=1) + 1e-9  # (N,)
+            c_stain = numerator / denominator
+
         C = np.column_stack((c_af, c_stain))
         return C
 
     def transform(self, X):
-        C = self._unmix_sequential(X)
+        """アンミキシングを実行し、漏れ込み補正済みの係数を返す.
+
+        Returns
+        -------
+        C_af : ndarray, shape (n,)
+            自家蛍光の強度係数.
+        C_stain_corrected : ndarray, shape (n,)
+            漏れ込み補正済みの色素強度係数.
+        """
+        C = self._unmix(X)
         C_af = C[:, 0]
         C_stain = C[:, 1]
         C_stain_corrected = C_stain - self.slope * C_af - self.bg
         return C_af, C_stain_corrected
 
     def get_raw_coefficients(self, X):
-        return self._unmix_sequential(X)
+        """補正前の生の係数 [c_af, c_stain] を返す."""
+        return self._unmix(X)
 
     def remove_stain_component(self, X):
-        C = self._unmix_sequential(X)
+        """スペクトルから色素成分を除去し、純粋な自家蛍光スペクトルを返す."""
+        C = self._unmix(X)
         return X - C[:, 1][:, None] * self.S_Stain[None, :]
 
 def run_unmixing_group(results_base_dir, stain_name="PI"):
