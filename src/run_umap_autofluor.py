@@ -33,7 +33,7 @@ def load_spectral_data(sraw_path, fcs_path, cofactor=None):
 
     wl_features = [
         c for c in df_sraw.columns
-        if c.startswith('Area_') and c.endswith('nm') and '638.6nm' not in c
+        if c.startswith('Area_') and c.endswith('nm')
     ]
     X_spectral = df_sraw[wl_features].values
 
@@ -202,15 +202,16 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     print("Step 4: Preprocessing (ArcSinh + StandardScaler)...")
     print("=" * 60)
 
-    X_to_umap_arcsinh = np.arcsinh(X_to_umap / cofactor)
+    X_combined = np.vstack([X_neg, X_to_umap])
+    X_combined_arcsinh = np.arcsinh(X_combined / cofactor)
     scaler = StandardScaler()
-    X_to_umap_scaled = scaler.fit_transform(X_to_umap_arcsinh)
+    X_combined_scaled = scaler.fit_transform(X_combined_arcsinh)
 
     # =========================================================================
     # 5. 2D UMAP
     # =========================================================================
     print(f"\n{'=' * 60}")
-    print("Step 5: Running 2D UMAP on reconstructed AF data...")
+    print("Step 5: Running 2D UMAP on combined AF data...")
     print("=" * 60)
 
     reducer = umap.UMAP(
@@ -221,7 +222,9 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
         random_state=seed
     )
 
-    umap_coords = reducer.fit_transform(X_to_umap_scaled)
+    umap_coords_combined = reducer.fit_transform(X_combined_scaled)
+    umap_neg = umap_coords_combined[:len(X_neg)]
+    umap_stain = umap_coords_combined[len(X_neg):]
 
     # =========================================================================
     # 6. Plotly Visualization
@@ -231,30 +234,44 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     print("=" * 60)
 
     fig = make_subplots(
-        rows=1, cols=2,
+        rows=1, cols=3,
         subplot_titles=(
-            f'Stained ({stain_name}) - Autofluorescence UMAP',
+            'Negative Control AF',
+            f'Stained ({stain_name}) - Unmixed AF',
             f'Stained ({stain_name}) - Colored by {stain_label}'
         )
     )
     
-    # Left panel: Uncolored (gray) AF UMAP of the stained sample
+    # Left panel: Negative Control
     fig.add_trace(
         go.Scatter(
-            x=umap_coords[:, 0], y=umap_coords[:, 1],
-            mode='markers', name='Autofluorescence UMAP',
+            x=umap_neg[:, 0], y=umap_neg[:, 1],
+            mode='markers', name='Negative AF',
             marker=dict(
-                size=3, color='#d3d3d3',
+                size=3, color='#808080',
                 opacity=0.6
             ),
             showlegend=False
         ), row=1, col=1
     )
     
-    # Right panel: Same UMAP colored by PI
+    # Middle panel: Uncolored AF UMAP of the stained sample
     fig.add_trace(
         go.Scatter(
-            x=umap_coords[:, 0], y=umap_coords[:, 1],
+            x=umap_stain[:, 0], y=umap_stain[:, 1],
+            mode='markers', name='Unmixed AF',
+            marker=dict(
+                size=3, color='#4682b4',
+                opacity=0.6
+            ),
+            showlegend=False
+        ), row=1, col=2
+    )
+    
+    # Right panel: Same UMAP colored by stain
+    fig.add_trace(
+        go.Scatter(
+            x=umap_stain[:, 0], y=umap_stain[:, 1],
             mode='markers', name=f'{stain_name} Intensity',
             marker=dict(
                 size=3, color=stain_intensity,
@@ -263,17 +280,17 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
                 colorbar=dict(title=stain_label, x=1.0)
             ),
             showlegend=False
-        ), row=1, col=2
+        ), row=1, col=3
     )
 
     fig.update_layout(
-        title=f'Reconstructed Autofluorescence UMAP + {stain_name} Projection',
-        width=1400, height=700,
-        margin=dict(l=40, r=40, b=40, t=60),
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+        title=f'Autofluorescence UMAP Projection',
+        width=1800, height=600,
+        margin=dict(l=40, r=40, b=40, t=60)
     )
-    fig.update_xaxes(title_text='UMAP 1')
-    fig.update_yaxes(title_text='UMAP 2')
+    for i in range(1, 4):
+        fig.update_xaxes(title_text='UMAP 1', row=1, col=i)
+        fig.update_yaxes(title_text='UMAP 2', row=1, col=i)
 
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     fig.write_html(output_path)
@@ -283,32 +300,39 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     if png_output_path:
         import matplotlib.pyplot as plt
         plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.available else 'default')
-        fig_mpl, axes = plt.subplots(1, 2, figsize=(15, 6.5), dpi=200)
+        fig_mpl, axes = plt.subplots(1, 3, figsize=(18, 5.5), dpi=200)
         
-        # Left: Uncolored AF UMAP
+        # Left: Negative Control
         axes[0].scatter(
-            umap_coords[:, 0], umap_coords[:, 1], 
-            c='#d3d3d3', s=2, alpha=0.5
+            umap_neg[:, 0], umap_neg[:, 1], 
+            c='#808080', s=2, alpha=0.5
         )
-        axes[0].set_title(f'Stained ({stain_name}) - Autofluorescence UMAP\n(Uncolored)', fontsize=12, fontweight='bold', pad=10)
+        axes[0].set_title('Negative Control AF', fontsize=12, fontweight='bold', pad=10)
         axes[0].set_xlabel('UMAP 1', fontsize=10)
         axes[0].set_ylabel('UMAP 2', fontsize=10)
         
-        # Right: Colored by Stain
-        sc2 = axes[1].scatter(
-            umap_coords[:, 0], umap_coords[:, 1], 
-            c=stain_intensity, vmin=vmin, vmax=vmax, cmap='coolwarm', s=2, alpha=0.5
+        # Middle: Unmixed AF
+        axes[1].scatter(
+            umap_stain[:, 0], umap_stain[:, 1], 
+            c='#4682b4', s=2, alpha=0.5
         )
-        axes[1].set_title(f'Stained ({stain_name}) - Target Dye Intensity\n({stain_label})', fontsize=12, fontweight='bold', pad=10)
+        axes[1].set_title(f'Stained ({stain_name}) - Unmixed AF', fontsize=12, fontweight='bold', pad=10)
         axes[1].set_xlabel('UMAP 1', fontsize=10)
         axes[1].set_ylabel('UMAP 2', fontsize=10)
-        fig_mpl.colorbar(sc2, ax=axes[1], label=stain_label)
         
-        fig_mpl.suptitle(f'Reconstructed Autofluorescence UMAP + {stain_name} Projection', fontsize=14, fontweight='bold', y=0.98)
+        # Right: Colored by Stain
+        sc2 = axes[2].scatter(
+            umap_stain[:, 0], umap_stain[:, 1], 
+            c=stain_intensity, vmin=vmin, vmax=vmax, cmap='coolwarm', s=2, alpha=0.5
+        )
+        axes[2].set_title(f'Stained ({stain_name}) - Colored by {stain_name}', fontsize=12, fontweight='bold', pad=10)
+        axes[2].set_xlabel('UMAP 1', fontsize=10)
+        axes[2].set_ylabel('UMAP 2', fontsize=10)
+        plt.colorbar(sc2, ax=axes[2], label=stain_label)
+        
         plt.tight_layout()
-        os.makedirs(os.path.dirname(png_output_path) or '.', exist_ok=True)
-        plt.savefig(png_output_path, bbox_inches='tight')
-        plt.close()
+        fig_mpl.savefig(png_output_path, bbox_inches='tight')
+        plt.close(fig_mpl)
         print(f"  Static 2D plot saved to: {png_output_path}")
 
     temp_dir = os.path.join(PROJECT_ROOT, "analysis", "results", "_temp_autofluor")

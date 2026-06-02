@@ -78,9 +78,7 @@ def plot_spectral_density(csv_path, output_path):
             for j in range(start_idx, end_idx):
                 density_grid[:, j] = density[:, i]
 
-        # Mask out the 638.6nm channel (laser noise)
-        mask_idx = int(638.6 - 400)
-        density_grid[:, mask_idx-1:mask_idx+2] = np.nan
+
 
         im = ax.pcolormesh(x_grid, intensity_bins, density_grid, cmap=cmap, norm=LogNorm(vmin=1, vmax=np.nanmax(density)))
         ax.set_xlabel('Wavelength (nm)', fontsize=11)

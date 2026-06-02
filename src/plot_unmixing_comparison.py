@@ -67,9 +67,7 @@ def _render_density_panel(ax, data, wl_values, title, cmap, intensity_bins, vmax
         for j in range(start_idx, end_idx):
             density_grid[:, j] = density[:, i]
 
-    # 638.6nm チャンネルをマスク (レーザーノイズ)
-    mask_idx = int(638.6 - 400)
-    density_grid[:, mask_idx - 1:mask_idx + 2] = np.nan
+
 
     vmax = vmax_global if vmax_global else np.nanmax(density)
     im = ax.pcolormesh(x_grid, intensity_bins, density_grid,
@@ -86,7 +84,7 @@ def _render_density_panel(ax, data, wl_values, title, cmap, intensity_bins, vmax
 
 
 def plot_unmixing_comparison(neg_csv_path, stain_csv_path, output_path,
-                             stain_name="Calcein"):
+                             stain_name="Calcein", method='poisson'):
     """3パネル比較スペクトル密度プロットを生成する.
 
     Parameters
@@ -99,23 +97,68 @@ def plot_unmixing_comparison(neg_csv_path, stain_csv_path, output_path,
         出力画像ファイルのパス (.png).
     stain_name : str
         色素名 (タイトル表示用).
+    method : str
+        アンミキシング手法 ('poisson', 'scarf', 'autoencoder').
     """
     # --- データ読み込み ---
     df_neg = pd.read_csv(neg_csv_path)
     df_stain = pd.read_csv(stain_csv_path)
 
     wl_features = get_spectral_features(df_neg)
-    wl_values = [float(c.replace('Area_', '').replace('nm', '')) for c in wl_features]
+    wl_values = np.array([float(f.replace('Area_', '').replace('nm', ''))
+                          for f in wl_features])
 
     X_neg = df_neg[wl_features].values
     X_stain = df_stain[wl_features].values
 
     # --- アンミキシング実行 ---
-    unmixer = PoissonUnmixer()
-    unmixer.fit(X_neg, X_stain)
+    if method == 'autoencoder':
+        from src.unmix_autoencoder import AutoEncoderUnmixer
+        unmixer = AutoEncoderUnmixer()
+        unmixer.fit(X_neg, X_stain)
+        
+        parts_neg = os.path.normpath(neg_csv_path).split(os.sep)
+        date_str = parts_neg[-3]
+        model_path = os.path.join(PROJECT_ROOT, "analysis", "results", date_str, "ae_model.pth")
+        if os.path.exists(model_path):
+            unmixer.load_model(model_path)
+        else:
+            print(f"Warning: Missing AE model at {model_path}. It will use weights from random init.")
+            
+        X_unmixed_af = unmixer.remove_stain_component(X_stain)
+    elif method == 'scarf':
+        from src.unmix_scarf import ScarfKnnUnmixer
+        unmixer = ScarfKnnUnmixer(k_neighbors=10)
+        unmixer.fit(X_neg, X_stain)
+        
+        # Load embeddings
+        parts_neg = os.path.normpath(neg_csv_path).split(os.sep)
+        parts_stain = os.path.normpath(stain_csv_path).split(os.sep)
+        date_str = parts_neg[-3]
+        neg_label = parts_neg[-2]
+        stain_label = parts_stain[-2]
+        
+        emb_neg_path = os.path.join(PROJECT_ROOT, "learning", "results", date_str, neg_label, f"{neg_label}_scarf_embeddings.csv")
+        emb_stain_path = os.path.join(PROJECT_ROOT, "learning", "results", date_str, stain_label, f"{stain_label}_scarf_embeddings.csv")
+        
+        if os.path.exists(emb_neg_path) and os.path.exists(emb_stain_path):
+            emb_neg = pd.read_csv(emb_neg_path).values
+            emb_stain = pd.read_csv(emb_stain_path).values
+            unmixer.fit_knn(emb_neg, X_neg)
+            
+            S_AF_personalized = unmixer.get_personalized_saf(emb_stain)
+            C = unmixer._unmix_poisson_irls_personalized(X_stain, S_AF_personalized)
+            X_unmixed_af = X_stain - C[:, 1][:, None] * unmixer.S_Stain[None, :]
+        else:
+            print("Warning: Missing embeddings for plot. Falling back to PoissonUnmixer.")
+            unmixer = PoissonUnmixer()
+            unmixer.fit(X_neg, X_stain)
+            X_unmixed_af = unmixer.remove_stain_component(X_stain)
+    else:
+        unmixer = PoissonUnmixer()
+        unmixer.fit(X_neg, X_stain)
+        X_unmixed_af = unmixer.remove_stain_component(X_stain)
 
-    # 色素成分を除去した自家蛍光スペクトルを再構築
-    X_unmixed_af = unmixer.remove_stain_component(X_stain)
     X_unmixed_af = np.maximum(X_unmixed_af, 0)
 
     # --- プロット ---
@@ -157,9 +200,10 @@ def plot_unmixing_comparison(neg_csv_path, stain_csv_path, output_path,
         if im is not None:
             fig.colorbar(im, ax=ax, label='Event Count', pad=0.02, shrink=0.85)
 
+    unmixer_name = "AutoEncoder" if method == 'autoencoder' else ("SCARF-kNN" if method == 'scarf' else "Poisson IRLS")
     fig.suptitle(
         f'Spectral Unmixing Comparison — {stain_name}\n'
-        f'Unmixer: Poisson IRLS  |  slope={unmixer.slope:.4f}  bg={unmixer.bg:.2f}',
+        f'Unmixer: {unmixer_name}  |  slope={unmixer.slope:.4f}  bg={unmixer.bg:.2f}',
         fontsize=14, fontweight='bold', y=1.03)
 
     plt.tight_layout()
@@ -192,6 +236,8 @@ def main():
                         help='色素名 (デフォルト: Calcein)')
     parser.add_argument('--output', type=str, default=None,
                         help='出力 PNG のパス')
+    parser.add_argument('--method', type=str, choices=['poisson', 'scarf', 'autoencoder'], default='poisson',
+                        help='アンミキシング手法 (poisson, scarf, autoencoder)')
     args = parser.parse_args()
 
     # CSV パスの解決
@@ -214,7 +260,7 @@ def main():
             f"unmixing_comparison_{args.stain}.png")
 
     plot_unmixing_comparison(neg_csv, stain_csv, args.output,
-                             stain_name=args.stain)
+                             stain_name=args.stain, method=args.method)
 
 
 if __name__ == '__main__':

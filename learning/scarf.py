@@ -130,7 +130,7 @@ def run_global_scarf_pipeline(samples, epochs=200, batch_size=128, lr=0.001, tem
         assert len(df_sraw) == len(df_fcs), f"Event counts do not match for {sample['sample_label']}"
         
         # Extract features
-        wl_features = [c for c in df_sraw.columns if c.startswith('Area_') and c.endswith('nm') and '638.6nm' not in c]
+        wl_features = [c for c in df_sraw.columns if c.startswith('Area_') and c.endswith('nm')]
         X_spectral = df_sraw[wl_features].values
         scatter_features = ['FSC - Area', 'SSC - Area']
         X_scatter = df_fcs[scatter_features].values

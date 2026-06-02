@@ -53,7 +53,7 @@ def load_and_preprocess(csv_path, fcs_path, cofactor=None):
     assert len(df_sraw) == len(df_fcs), "Event counts do not match!"
 
     # Feature selection
-    wl_features = [c for c in df_sraw.columns if c.startswith('Area_') and c.endswith('nm') and '638.6nm' not in c]
+    wl_features = [c for c in df_sraw.columns if c.startswith('Area_') and c.endswith('nm')]
     X_spectral = df_sraw[wl_features].values
     scatter_features = ['FSC - Area', 'SSC - Area']
     X_scatter = df_fcs[scatter_features].values

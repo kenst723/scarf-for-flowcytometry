@@ -7,27 +7,42 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 def get_spectral_features(df):
-    """Get spectral channels excluding 638.6nm"""
-    return [c for c in df.columns if c.startswith('Area_') and c.endswith('nm') and '638.6nm' not in c]
+    """Get spectral channels"""
+    return [c for c in df.columns if c.startswith('Area_') and c.endswith('nm')]
 
-def save_unmixing_plot(af_vals, stain_vals, stain_name, plot_path, title):
-    """Save 2D scatter plot of unmixing results with coolwarm colormap"""
+def save_unmixing_plot(raw_af_vals, raw_stain_vals, af_vals, stain_vals, stain_name, plot_path, title):
+    """Save 2D scatter plot comparing raw vs unmixed results"""
+    raw_af_plot = np.arcsinh(raw_af_vals / 150.0)
+    raw_stain_plot = np.arcsinh(raw_stain_vals / 150.0)
     af_plot = np.arcsinh(af_vals / 150.0)
     stain_plot = np.arcsinh(stain_vals / 150.0)
     
-    plt.figure(figsize=(6.5, 5.5), dpi=150)
-    sc = plt.scatter(af_plot, stain_plot, s=2, alpha=0.3, c=stain_plot, cmap='coolwarm', edgecolors='none')
-    plt.colorbar(sc, label=f'Unmixed {stain_name} (ArcSinh)')
-    plt.xlabel("Unmixed Autofluorescence (ArcSinh)")
-    plt.ylabel(f"Unmixed {stain_name} (ArcSinh)")
-    plt.title(f"Spectral Unmixing Result\n{title}")
-    plt.grid(True, linestyle='--', alpha=0.5)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), dpi=150)
+    
+    # Left: Raw data
+    sc0 = axes[0].scatter(raw_af_plot, raw_stain_plot, s=2, alpha=0.3, c=raw_stain_plot, cmap='coolwarm', edgecolors='none')
+    axes[0].set_xlabel("Raw Peak Autofluorescence Channel (ArcSinh)")
+    axes[0].set_ylabel(f"Raw Peak {stain_name} Channel (ArcSinh)")
+    axes[0].set_title("Before Unmixing (Raw Data)")
+    axes[0].grid(True, linestyle='--', alpha=0.5)
+    fig.colorbar(sc0, ax=axes[0], label=f'Raw {stain_name} (ArcSinh)')
+
+    # Right: Unmixed data
+    sc1 = axes[1].scatter(af_plot, stain_plot, s=2, alpha=0.3, c=stain_plot, cmap='coolwarm', edgecolors='none')
+    axes[1].set_xlabel("Unmixed Autofluorescence (ArcSinh)")
+    axes[1].set_ylabel(f"Unmixed {stain_name} (ArcSinh)")
+    axes[1].set_title("After Spectral Unmixing")
+    axes[1].grid(True, linestyle='--', alpha=0.5)
+    fig.colorbar(sc1, ax=axes[1], label=f'Unmixed {stain_name} (ArcSinh)')
+    
+    fig.suptitle(f"Spectral Unmixing Result\n{title}", fontsize=14, fontweight='bold', y=1.02)
     plt.tight_layout()
-    plt.savefig(plot_path, dpi=150)
+    plt.savefig(plot_path, bbox_inches='tight', dpi=150)
     plt.close()
 
 class PoissonUnmixer:
-    """スペクトルアンミキシング: 自家蛍光(AF)と蛍光色素を分離する.
+    """
+    スペクトルアンミキシング: 自家蛍光(AF)と蛍光色素を分離する.
 
     Parameters
     ----------
@@ -45,13 +60,19 @@ class PoissonUnmixer:
         self.tol = tol
         self.method = method
         self.irls_iter = irls_iter
-        self.S_AF = None
-        self.S_Stain = None
-        self.S = None
-        self.slope = 0.0
-        self.bg = 0.0
-        self._tail_mask = None
-        self._peak_mask = None
+        
+        # 学習される参照スペクトル (テンプレート)
+        self.S_AF = None      # 自家蛍光(Autofluorescence)の基準スペクトル (合計1に正規化された波形)
+        self.S_Stain = None   # 色素(Stain)の基準スペクトル (合計1に正規化された波形)
+        self.S = None         # S_AFとS_Stainを結合した参照行列 (現在未使用だが可視化等で有用)
+        
+        # 漏れ込み補正用の係数
+        self.slope = 0.0      # ネガティブ細胞における、自家蛍光強度に対する色素強度の漏れ込みの傾き
+        self.bg = 0.0         # 漏れ込み補正後の色素チャンネルのバックグラウンド(オフセット)値
+        
+        # 動的に決定されるチャンネルマスク(True/Falseの配列)
+        self._tail_mask = None  # 自家蛍光成分(c_af)を推定するための、色素の発光がゼロとみなせる波長領域
+        self._peak_mask = None  # 色素成分(c_stain)を推定するための、色素の発光が強い波長領域
 
     def _compute_channel_masks(self):
         """S_Stain の値に基づいてテール領域とピーク領域のマスクを動的に決定する.
@@ -101,8 +122,22 @@ class PoissonUnmixer:
         ratios = S_bright_total / (self.S_AF + 1e-9)
         peak_idx = np.argmax(ratios)
 
+        # ピーク波長の蛍光強度分布から、細胞の密集度が最も高い「最頻値（Mode）」を探す
         peak_values = X_stain[:, peak_idx]
-        stained_cells = X_stain[peak_values >= np.percentile(peak_values, 98)]
+        
+        # ネガティブ細胞群のピークを誤って拾わないよう、上位50%の明るさを持つ細胞群に絞る
+        bright_half = peak_values[peak_values > np.median(peak_values)]
+        if len(bright_half) == 0:
+            bright_half = peak_values
+            
+        # ヒストグラムを作成して最も密度が高い（細胞数が多い）強度帯を特定
+        hist, bin_edges = np.histogram(bright_half, bins=50)
+        max_bin_idx = np.argmax(hist)
+        mode_val = (bin_edges[max_bin_idx] + bin_edges[max_bin_idx + 1]) / 2.0
+        
+        # 最頻値周辺（±5%の幅）に密集している典型的な細胞群のみを抽出
+        margin = (np.max(bright_half) - np.min(bright_half)) * 0.05
+        stained_cells = X_stain[(peak_values >= mode_val - margin) & (peak_values <= mode_val + margin)]
         if len(stained_cells) == 0:
             stained_cells = X_stain
 
@@ -124,8 +159,10 @@ class PoissonUnmixer:
             c_af_all = C[:, 0]
             c_stain_all = C[:, 1]
 
-            # Select cells with significant stain signal (top 50% by c_stain)
-            valid = c_stain_all > np.percentile(c_stain_all, 50)
+            # Select cells in the densest typical region (40th to 60th percentile) to avoid saturated outliers
+            p40 = np.percentile(c_stain_all, 40)
+            p60 = np.percentile(c_stain_all, 60)
+            valid = (c_stain_all >= p40) & (c_stain_all <= p60)
             X_valid = X_stain[valid]
             c_af_valid = c_af_all[valid]
             c_stain_valid = c_stain_all[valid]
@@ -283,7 +320,7 @@ class PoissonUnmixer:
         C = self._unmix(X)
         return X - C[:, 1][:, None] * self.S_Stain[None, :]
 
-def run_unmixing_group(results_base_dir, stain_name="PI"):
+def run_unmixing_group(results_base_dir, stain_name="PI", method='poisson'):
     neg_csv_paths = glob.glob(os.path.join(results_base_dir, "Negative_*", "*.csv")) + \
                     glob.glob(os.path.join(results_base_dir, "negative_*", "*.csv"))
     stain_csv_paths = glob.glob(os.path.join(results_base_dir, f"{stain_name}_*", "*.csv")) + \
@@ -312,14 +349,64 @@ def run_unmixing_group(results_base_dir, stain_name="PI"):
         X_stain_all.append(df[wl_features].values)
     X_stain_all = np.vstack(X_stain_all)
     
-    unmixer = PoissonUnmixer()
-    unmixer.fit(X_neg_all, X_stain_all)
+    if method == 'autoencoder':
+        print("    [AutoEncoder] Initializing AutoEncoderUnmixer...")
+        from src.unmix_autoencoder import AutoEncoderUnmixer
+        model_path = os.path.join(results_base_dir, "ae_model.pth")
+        unmixer = AutoEncoderUnmixer(model_save_path=model_path)
+        unmixer.fit(X_neg_all, X_stain_all)
+    elif method == 'scarf':
+        print("    [SCARF] Initializing ScarfKnnUnmixer...")
+        from src.unmix_scarf import ScarfKnnUnmixer
+        unmixer = ScarfKnnUnmixer(k_neighbors=10)
+        unmixer.fit(X_neg_all, X_stain_all)
+        
+        neg_emb_list = []
+        for path in neg_csv_paths:
+            parts = path.split(os.sep)
+            date_str = parts[-3]
+            sample_label = parts[-2]
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            emb_path = os.path.join(project_root, "learning", "results", date_str, sample_label, f"{sample_label}_scarf_embeddings.csv")
+            if os.path.exists(emb_path):
+                neg_emb_list.append(pd.read_csv(emb_path).values)
+            else:
+                print(f"    [SCARF Error] Missing embedding at {emb_path}")
+                return
+        emb_neg_all = np.vstack(neg_emb_list)
+        unmixer.fit_knn(emb_neg_all, X_neg_all)
+    else:
+        unmixer = PoissonUnmixer()
+        unmixer.fit(X_neg_all, X_stain_all)
+        
     print(f"    Calculated autoflour leakage slope: {unmixer.slope:.6f}")
+    
+    peak_af_idx = np.argmax(unmixer.S_AF)
+    peak_stain_idx = np.argmax(unmixer.S_Stain)
     
     for path in neg_csv_paths + stain_csv_paths:
         df = pd.read_csv(path)
         wl_features = get_spectral_features(df)
-        af, stain_corr = unmixer.transform(df[wl_features].values)
+        X_val = df[wl_features].values
+        
+        raw_af_vals = X_val[:, peak_af_idx]
+        raw_stain_vals = X_val[:, peak_stain_idx]
+        
+        if method == 'scarf':
+            parts = path.split(os.sep)
+            date_str = parts[-3]
+            sample_label = parts[-2]
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            emb_path = os.path.join(project_root, "learning", "results", date_str, sample_label, f"{sample_label}_scarf_embeddings.csv")
+            if os.path.exists(emb_path):
+                emb_val = pd.read_csv(emb_path).values
+                af, stain_corr = unmixer.transform_with_scarf(X_val, emb_val)
+            else:
+                print(f"    [SCARF Warning] Missing embedding for {sample_label}. Falling back to global S_AF.")
+                af, stain_corr = unmixer.transform(X_val)
+        else:
+            af, stain_corr = unmixer.transform(X_val)
+
         
         df['Unmixed_AF'] = np.maximum(af, 0)
         df[f'Unmixed_{stain_name}'] = np.maximum(stain_corr, 0)
@@ -329,5 +416,5 @@ def run_unmixing_group(results_base_dir, stain_name="PI"):
         df.to_csv(path, index=False)
         
         plot_path = os.path.join(os.path.dirname(path), "unmixing_scatter.png")
-        save_unmixing_plot(df['Unmixed_AF'].values, df[f'Unmixed_{stain_name}'].values, stain_name, plot_path, os.path.basename(path))
+        save_unmixing_plot(raw_af_vals, raw_stain_vals, df['Unmixed_AF'].values, df[f'Unmixed_{stain_name}'].values, stain_name, plot_path, os.path.basename(path))
         print(f"    Unmixing complete: {os.path.basename(path)}")
