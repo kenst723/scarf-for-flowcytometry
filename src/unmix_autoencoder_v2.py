@@ -468,7 +468,8 @@ class TransformerAutoEncoderUnmixer:
         self.model = None
         self.cofactor = 150.0
         self.val_min = 0.0
-        self.val_max = 1.0
+        self.val_max_in = 1.0
+        self.val_max_tgt = 1.0
 
         # Interface compatibility with AutoEncoderUnmixer
         self.S_AF = None
@@ -533,13 +534,13 @@ class TransformerAutoEncoderUnmixer:
         # 4. Preprocessing: ArcSinh + MinMax -> [0, 1]
         X_input_arc  = np.arcsinh(X_input_raw  / self.cofactor)
         X_target_arc = np.arcsinh(X_target_raw / self.cofactor)
-        X_stain_arc  = np.arcsinh(X_stain / self.cofactor)
         
         self.val_min = float(np.min(X_input_arc))
-        self.val_max = float(max(np.max(X_input_arc), np.max(X_stain_arc)))
+        self.val_max_in  = float(np.max(X_input_arc))
+        self.val_max_tgt = float(np.max(X_target_arc))
         
-        X_input_scaled  = np.clip((X_input_arc  - self.val_min) / (self.val_max - self.val_min), 0.0, 1.0)
-        X_target_scaled = np.clip((X_target_arc - self.val_min) / (self.val_max - self.val_min), 0.0, 1.0)
+        X_input_scaled  = np.clip((X_input_arc  - self.val_min) / (self.val_max_in  - self.val_min), 0.0, 1.0)
+        X_target_scaled = np.clip((X_target_arc - self.val_min) / (self.val_max_tgt - self.val_min), 0.0, 1.0)
 
         # 5. Train / validation split
         n = len(X_input_scaled)
@@ -645,7 +646,8 @@ class TransformerAutoEncoderUnmixer:
             "bottleneck_dim":          self.bottleneck_dim,
             "dropout":                 self.dropout,
             "val_min":                 self.val_min,
-            "val_max":                 self.val_max,
+            "val_max_in":              self.val_max_in,
+            "val_max_tgt":             self.val_max_tgt,
             "cofactor":                self.cofactor,
             "S_AF":                    self.S_AF,
             "S_Stain":                 self.S_Stain,
@@ -656,8 +658,9 @@ class TransformerAutoEncoderUnmixer:
     def load_model(self, path):
         """Load model from checkpoint."""
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
-        self.val_min  = ckpt.get("val_min",  self.val_min)
-        self.val_max  = ckpt.get("val_max",  self.val_max)
+        self.val_min     = ckpt.get("val_min",  self.val_min)
+        self.val_max_in  = ckpt.get("val_max_in",  ckpt.get("val_max", 1.0))
+        self.val_max_tgt = ckpt.get("val_max_tgt", ckpt.get("val_max", 1.0))
         self.cofactor = ckpt.get("cofactor", self.cofactor)
         self.S_AF     = ckpt.get("S_AF",     self.S_AF)
         self.S_Stain  = ckpt.get("S_Stain",  self.S_Stain)
@@ -681,13 +684,13 @@ class TransformerAutoEncoderUnmixer:
             raise ValueError("Model not fitted. Call fit() first.")
         X_arc    = np.arcsinh(X / self.cofactor)
         X_scaled = np.clip(
-            (X_arc - self.val_min) / (self.val_max - self.val_min), 0.0, 1.0
+            (X_arc - self.val_min) / (self.val_max_in - self.val_min), 0.0, 1.0
         )
         t = torch.FloatTensor(X_scaled).to(self.device)
         self.model.eval()
         with torch.no_grad():
             pred_scaled = self.model(t).cpu().numpy()
-        pred_arc = pred_scaled * (self.val_max - self.val_min) + self.val_min
+        pred_arc = pred_scaled * (self.val_max_tgt - self.val_min) + self.val_min
         return np.sinh(pred_arc) * self.cofactor
 
     def _unmix(self, X):
