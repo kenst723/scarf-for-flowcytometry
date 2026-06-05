@@ -376,7 +376,9 @@ class AutoEncoderUnmixer:
 
     def remove_stain_component(self, X):
         """色素成分を除去し、純粋な自家蛍光(AF)スペクトルを返す"""
-        return self._predict_af(X)
+        C = self._unmix(X)
+        c_stain = C[:, 1]
+        return X - c_stain[:, None] * self.S_Stain[None, :]
 
     def _unmix(self, X):
         """

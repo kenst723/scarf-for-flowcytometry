@@ -145,7 +145,7 @@ def process_stain_files(experiment_folder, rack_name, stain_name):
     return sraw_files
 
 
-def run_pipeline(experiment_folder, rack_name, method='poisson'):
+def run_pipeline(experiment_folder, rack_name, method='poisson', retrain=False, **tf_kwargs):
     rack_dir = os.path.join(get_experiment_data_dir(experiment_folder), rack_name)
     if not os.path.isdir(rack_dir):
         print(f"Error: Rack directory not found: {rack_dir}")
@@ -175,7 +175,7 @@ def run_pipeline(experiment_folder, rack_name, method='poisson'):
             print(f"\n[Group Pipeline] Running Autofluor UMAP projection and Spectral Unmixing for {stain_name}...")
             
             print(f"  -> Performing Spectral Unmixing... (Method: {method})")
-            run_unmixing_group(results_base_dir=results_base_dir, stain_name=stain_name, method=method)
+            run_unmixing_group(results_base_dir=results_base_dir, stain_name=stain_name, method=method, retrain=retrain, **tf_kwargs)
             
             print("  -> Generating Unmixing Comparison Plots...")
             neg_csv = find_csv_in_dir(results_base_dir, "Negative")
@@ -188,10 +188,15 @@ def run_pipeline(experiment_folder, rack_name, method='poisson'):
             
             print("  -> Generating Group UMAP...")
             try:
-                sraw_dir = os.path.join(rack_dir, stain_name)
-                output_path = os.path.join(results_base_dir, f"autofluor_umap_{stain_name}.html")
-                png_path = os.path.join(results_base_dir, f"autofluor_umap_{stain_name}.png")
-                run_umap_autofluor(neg_dir, sraw_dir, output_path, stain_name=stain_name, png_output_path=png_path)
+                stain_dir = os.path.join(rack_dir, stain_name)
+                run_umap_autofluor(
+                    neg_dir=neg_dir,
+                    stain_dir=stain_dir,
+                    output_path=os.path.join(results_base_dir, f"autofluor_umap_{stain_name}.html"),
+                    png_output_path=os.path.join(results_base_dir, f"autofluor_umap_{stain_name}.png"),
+                    stain_name=stain_name,
+                    method=method
+                )
             except Exception as e:
                 print(f"  Warning: UMAP projection failed: {e}")
         else:
@@ -209,11 +214,53 @@ def main():
                         help='実験フォルダ名 (例: "Experiment 2026!05!21 15!59")')
     parser.add_argument('--rack', type=str, required=True,
                         help='ラック名 (例: "24 Tube Rack (5mL) - 1")')
-    parser.add_argument('--method', type=str, choices=['poisson', 'scarf', 'autoencoder'], default='poisson',
-                        help='アンミキシング手法 (poisson, scarf, autoencoder)')
+    parser.add_argument('--method', type=str,
+                        choices=['poisson', 'scarf', 'autoencoder', 'transformer'],
+                        default='poisson',
+                        help='アンミキシング手法 (poisson, scarf, autoencoder, transformer)')
+    parser.add_argument('--retrain', action='store_true',
+                        help='キャッシュされた学習済みモデルを使わず再学習する (Transformer等)')
+
+    # --- TransformerAE hyperparameters (only used when --method transformer) ---
+    tf = parser.add_argument_group('TransformerAE options (--method transformer)')
+    tf.add_argument('--tf-epochs',       type=int,   default=150,   help='Max training epochs (default: 150)')
+    tf.add_argument('--tf-batch-size',   type=int,   default=128,   help='Batch size (default: 128)')
+    tf.add_argument('--tf-lr',           type=float, default=0.0018,help='Learning rate (default: 0.0018)')
+    tf.add_argument('--tf-d-model',      type=int,   default=128,   help='Transformer d_model (default: 128)')
+    tf.add_argument('--tf-nhead',        type=int,   default=8,     help='Attention heads (default: 8)')
+    tf.add_argument('--tf-layers',       type=int,   default=3,     help='TransformerEncoder layers (default: 3)')
+    tf.add_argument('--tf-ffn',          type=int,   default=128,   help='FFN inner dim (default: 128)')
+    tf.add_argument('--tf-bottleneck',   type=int,   default=12,    help='Bottleneck dim (default: 12)')
+    tf.add_argument('--tf-dropout',      type=float, default=0.30,  help='Dropout (default: 0.30)')
+    tf.add_argument('--tf-alpha-cos',    type=float, default=0.031, help='Cosine loss weight (default: 0.031)')
+    tf.add_argument('--tf-alpha-grad',   type=float, default=0.002, help='Gradient loss weight (default: 0.002)')
+    tf.add_argument('--tf-no-huber',     action='store_true',        help='Use MSE instead of Huber loss')
+    tf.add_argument('--tf-patience',     type=int,   default=15,    help='Early stopping patience (default: 15)')
+    tf.add_argument('--tf-seed',         type=int,   default=42,    help='Random seed (default: 42)')
+
     args = parser.parse_args()
 
-    run_pipeline(args.experiment, args.rack, method=args.method)
+    # Build tf_kwargs to pass to TransformerAutoEncoderUnmixer
+    tf_kwargs = {}
+    if args.method == 'transformer':
+        tf_kwargs = dict(
+            epochs=args.tf_epochs,
+            batch_size=args.tf_batch_size,
+            lr=args.tf_lr,
+            d_model=args.tf_d_model,
+            nhead=args.tf_nhead,
+            num_transformer_layers=args.tf_layers,
+            dim_feedforward=args.tf_ffn,
+            bottleneck_dim=args.tf_bottleneck,
+            dropout=args.tf_dropout,
+            alpha_cos=args.tf_alpha_cos,
+            alpha_grad=args.tf_alpha_grad,
+            use_huber=not args.tf_no_huber,
+            patience=args.tf_patience,
+            seed=args.tf_seed,
+        )
+
+    run_pipeline(args.experiment, args.rack, method=args.method, retrain=args.retrain, **tf_kwargs)
 
 
 if __name__ == '__main__':

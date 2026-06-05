@@ -320,7 +320,7 @@ class PoissonUnmixer:
         C = self._unmix(X)
         return X - C[:, 1][:, None] * self.S_Stain[None, :]
 
-def run_unmixing_group(results_base_dir, stain_name="PI", method='poisson'):
+def run_unmixing_group(results_base_dir, stain_name="PI", method='poisson', retrain=False, **tf_kwargs):
     neg_csv_paths = glob.glob(os.path.join(results_base_dir, "Negative_*", "*.csv")) + \
                     glob.glob(os.path.join(results_base_dir, "negative_*", "*.csv"))
     stain_csv_paths = glob.glob(os.path.join(results_base_dir, f"{stain_name}_*", "*.csv")) + \
@@ -354,7 +354,21 @@ def run_unmixing_group(results_base_dir, stain_name="PI", method='poisson'):
         from src.unmix_autoencoder import AutoEncoderUnmixer
         model_path = os.path.join(results_base_dir, "ae_model.pth")
         unmixer = AutoEncoderUnmixer(model_save_path=model_path)
-        unmixer.fit(X_neg_all, X_stain_all)
+        if not retrain and os.path.exists(model_path):
+            print("    [AutoEncoder] Found cached model. Skipping training...")
+            unmixer.load_model(model_path)
+        else:
+            unmixer.fit(X_neg_all, X_stain_all)
+    elif method == 'transformer':
+        print("    [TransformerAE] Initializing TransformerAutoEncoderUnmixer...")
+        from src.unmix_autoencoder_v2 import TransformerAutoEncoderUnmixer
+        model_path = os.path.join(results_base_dir, "transformer_ae_model.pth")
+        unmixer = TransformerAutoEncoderUnmixer(model_save_path=model_path, **tf_kwargs)
+        if not retrain and os.path.exists(model_path):
+            print("    [TransformerAE] Found cached model. Skipping training...")
+            unmixer.load_model(model_path)
+        else:
+            unmixer.fit(X_neg_all, X_stain_all)
     elif method == 'scarf':
         print("    [SCARF] Initializing ScarfKnnUnmixer...")
         from src.unmix_scarf import ScarfKnnUnmixer

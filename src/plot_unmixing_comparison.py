@@ -126,6 +126,20 @@ def plot_unmixing_comparison(neg_csv_path, stain_csv_path, output_path,
             print(f"Warning: Missing AE model at {model_path}. It will use weights from random init.")
             
         X_unmixed_af = unmixer.remove_stain_component(X_stain)
+    elif method == 'transformer':
+        from src.unmix_autoencoder_v2 import TransformerAutoEncoderUnmixer
+        unmixer = TransformerAutoEncoderUnmixer()
+        
+        parts_neg = os.path.normpath(neg_csv_path).split(os.sep)
+        date_str = parts_neg[-3]
+        model_path = os.path.join(PROJECT_ROOT, "analysis", "results", date_str, "transformer_ae_model.pth")
+        
+        if os.path.exists(model_path):
+            unmixer.load_model(model_path)
+        else:
+            print(f"Warning: Missing TransformerAE model at {model_path}. It will use weights from random init.")
+            
+        X_unmixed_af = unmixer.remove_stain_component(X_stain)
     elif method == 'scarf':
         from src.unmix_scarf import ScarfKnnUnmixer
         unmixer = ScarfKnnUnmixer(k_neighbors=10)

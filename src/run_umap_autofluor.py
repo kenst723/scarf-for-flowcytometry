@@ -59,7 +59,7 @@ def find_sraw_fcs_pairs(directory):
 
 
 def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
-                       cofactor=None, seed=42, png_output_path=None):
+                       cofactor=None, seed=42, png_output_path=None, method='poisson'):
     if cofactor is None:
         cofactor = COFACTOR
 
@@ -168,13 +168,37 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
         print(f"  Successfully loaded unmixed intensities from processed CSVs.")
         
         # Calculate reference spectra directly to reconstruct AF
-        print("  Reconstructing pure Autofluorescence spectra for Stained samples using PoissonUnmixer...")
-        from src.unmix_spectral import PoissonUnmixer
-        unmixer = PoissonUnmixer()
-        unmixer.fit(X_neg, X_stain)
+        print(f"  Reconstructing pure Autofluorescence spectra for Stained samples using {method}...")
         
-        # Subtract stain component from raw spectra using the refined S_Stain
-        X_to_umap = X_stain - stain_unmixed_stain[:, None] * unmixer.S_Stain[None, :]
+        parts_neg = os.path.normpath(neg_pairs[0][0]).split(os.sep)
+        try:
+            data_idx = parts_neg.index("data")
+            experiment_folder = parts_neg[data_idx + 1]
+        except (ValueError, IndexError):
+            experiment_folder = "Experiment 2026!05!21 15!59"
+        from config import EXPERIMENTS, RESULTS_DIR
+        date_str = EXPERIMENTS.get(experiment_folder, experiment_folder)
+        
+        if method == 'transformer':
+            from src.unmix_autoencoder_v2 import TransformerAutoEncoderUnmixer
+            unmixer = TransformerAutoEncoderUnmixer()
+            model_path = os.path.join(PROJECT_ROOT, "analysis", "results", date_str, "transformer_ae_model.pth")
+            if os.path.exists(model_path):
+                unmixer.load_model(model_path)
+            X_to_umap = unmixer.remove_stain_component(X_stain)
+        elif method == 'autoencoder':
+            from src.unmix_autoencoder import AutoEncoderUnmixer
+            unmixer = AutoEncoderUnmixer()
+            model_path = os.path.join(PROJECT_ROOT, "analysis", "results", date_str, "ae_model.pth")
+            if os.path.exists(model_path):
+                unmixer.load_model(model_path)
+            X_to_umap = unmixer.remove_stain_component(X_stain)
+        else:
+            from src.unmix_spectral import PoissonUnmixer
+            unmixer = PoissonUnmixer()
+            unmixer.fit(X_neg, X_stain)
+            X_to_umap = X_stain - stain_unmixed_stain[:, None] * unmixer.S_Stain[None, :]
+            
         X_to_umap = np.maximum(X_to_umap, 0)
     else:
         print("  Warning: Unmixed CSV data not found for all samples. Falling back to raw spectra.")
