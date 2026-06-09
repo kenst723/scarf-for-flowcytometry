@@ -18,6 +18,8 @@ from src.plot_unmixing_comparison import plot_unmixing_comparison, find_csv_in_d
 """
 python analysis/run_pipeline.py --experiment "Experiment 2026!06!02 12!39" --rack "24 Tube Rack (5mL) - 1" --method autoencoder
 
+python analysis/run_pipeline.py   --experiment 'Experiment 2026!06!02 12!39'   --rack '24 Tube Rack (5mL) - 1'  --method poisson_glm
+
 """
 
 def generate_markdown_report(results_base_dir, stain_name, sraw_files):
@@ -161,8 +163,8 @@ def run_pipeline(experiment_folder, rack_name, method='poisson', retrain=False, 
     # 1. Process Negative first
     for neg_stain in negative_stains:
         sraw_files = process_stain_files(experiment_folder, rack_name, neg_stain)
-        if sraw_files:
-            generate_markdown_report(results_base_dir, neg_stain, sraw_files)
+        # if sraw_files:
+        #     generate_markdown_report(results_base_dir, neg_stain, sraw_files)
 
     # 2. Process other stains
     for stain_name in other_stains:
@@ -202,8 +204,8 @@ def run_pipeline(experiment_folder, rack_name, method='poisson', retrain=False, 
         else:
             print(f"\nWarning: Could not find Negative directory at {neg_dir}. Skipping group UMAP and Unmixing.")
 
-        print("\n[Report] Generating Markdown overview...")
-        generate_markdown_report(results_base_dir, stain_name, sraw_files)
+        # print("\n[Report] Generating Markdown overview...")
+        # generate_markdown_report(results_base_dir, stain_name, sraw_files)
 
     print("\nPipeline complete!")
 
@@ -215,9 +217,9 @@ def main():
     parser.add_argument('--rack', type=str, required=True,
                         help='ラック名 (例: "24 Tube Rack (5mL) - 1")')
     parser.add_argument('--method', type=str,
-                        choices=['poisson', 'scarf', 'autoencoder', 'transformer'],
+                        choices=['poisson', 'poisson_glm', 'scarf', 'autoencoder', 'transformer'],
                         default='poisson',
-                        help='アンミキシング手法 (poisson, scarf, autoencoder, transformer)')
+                        help='アンミキシング手法 (poisson, poisson_glm, scarf, autoencoder, transformer)')
     parser.add_argument('--retrain', action='store_true',
                         help='キャッシュされた学習済みモデルを使わず再学習する (Transformer等)')
 

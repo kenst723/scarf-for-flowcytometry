@@ -3,6 +3,10 @@ import sys
 import argparse
 import glob
 
+# Add project root to path BEFORE importing src modules
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -10,10 +14,15 @@ from plotly.subplots import make_subplots
 import umap
 import fcsparser
 from sklearn.preprocessing import StandardScaler
+from scipy.signal import savgol_filter
+from src.unmix_factory import get_unmixer
 
-# Add project root to path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT_ROOT)
+try:
+    import cuml
+    from cuml.manifold import UMAP as cuUMAP
+    HAS_CUML = True
+except ImportError:
+    HAS_CUML = False
 
 from config import COFACTOR
 from src.convert import convert_sraw_to_csv
@@ -179,25 +188,12 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
         from config import EXPERIMENTS, RESULTS_DIR
         date_str = EXPERIMENTS.get(experiment_folder, experiment_folder)
         
-        if method == 'transformer':
-            from src.unmix_autoencoder_v2 import TransformerAutoEncoderUnmixer
-            unmixer = TransformerAutoEncoderUnmixer()
-            model_path = os.path.join(PROJECT_ROOT, "analysis", "results", date_str, "transformer_ae_model.pth")
-            if os.path.exists(model_path):
-                unmixer.load_model(model_path)
-            X_to_umap = unmixer.remove_stain_component(X_stain)
-        elif method == 'autoencoder':
-            from src.unmix_autoencoder import AutoEncoderUnmixer
-            unmixer = AutoEncoderUnmixer()
-            model_path = os.path.join(PROJECT_ROOT, "analysis", "results", date_str, "ae_model.pth")
-            if os.path.exists(model_path):
-                unmixer.load_model(model_path)
-            X_to_umap = unmixer.remove_stain_component(X_stain)
-        else:
-            from src.unmix_spectral import PoissonUnmixer
-            unmixer = PoissonUnmixer()
-            unmixer.fit(X_neg, X_stain)
+        unmixer = get_unmixer(method, X_neg, X_stain, date_str=date_str)
+        
+        if method in ['poisson', 'poisson_glm']:
             X_to_umap = X_stain - stain_unmixed_stain[:, None] * unmixer.S_Stain[None, :]
+        else:
+            X_to_umap = unmixer.remove_stain_component(X_stain)
             
         X_to_umap = np.maximum(X_to_umap, 0)
     else:
@@ -226,27 +222,68 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
     print("Step 4: Preprocessing (ArcSinh + StandardScaler)...")
     print("=" * 60)
 
-    X_combined = np.vstack([X_neg, X_to_umap])
-    X_combined_arcsinh = np.arcsinh(X_combined / cofactor)
+    # ---------------------------------------------------------
+    # Apply Savitzky-Golay filter to remove shot noise (scatter)
+    # ---------------------------------------------------------
+    window_length = 7  # Must be odd
+    polyorder = 2
+    
+    X_neg_smooth = savgol_filter(X_neg, window_length, polyorder, axis=1)
+    X_to_umap_smooth = savgol_filter(X_to_umap, window_length, polyorder, axis=1)
+    
+    # Prevent negative values caused by the polynomial fit
+    X_neg_smooth = np.maximum(X_neg_smooth, 0)
+    X_to_umap_smooth = np.maximum(X_to_umap_smooth, 0)
+
+    X_neg_arcsinh = np.arcsinh(X_neg_smooth / cofactor)
+    X_to_umap_arcsinh = np.arcsinh(X_to_umap_smooth / cofactor)
+    
+    # Negativeデータ（生の自家蛍光）を基準としてScalerをフィットする
     scaler = StandardScaler()
-    X_combined_scaled = scaler.fit_transform(X_combined_arcsinh)
+    X_neg_scaled = scaler.fit_transform(X_neg_arcsinh)
+    X_to_umap_scaled = scaler.transform(X_to_umap_arcsinh)
+    
+    X_combined_scaled = np.vstack([X_neg_scaled, X_to_umap_scaled])
 
     # =========================================================================
     # 5. 2D UMAP
     # =========================================================================
     print(f"\n{'=' * 60}")
-    print("Step 5: Running 2D UMAP on combined AF data...")
+    if HAS_CUML:
+        print("Step 5: Running 2D UMAP on AF data (GPU cuML, fit on Negative only)...")
+    else:
+        print("Step 5: Running 2D UMAP on AF data (fit on Negative only)...")
     print("=" * 60)
 
-    reducer = umap.UMAP(
-        n_components=2,
-        n_neighbors=15,
-        min_dist=0.3,
-        metric='euclidean',
-        random_state=seed
-    )
+    if HAS_CUML:
+        reducer = cuUMAP(
+            n_components=2,
+            n_neighbors=10,
+            min_dist=0.3,
+            random_state=seed,
+            metric='euclidean'
+        )
+    else:
+        reducer = umap.UMAP(
+            n_components=2,
+            n_neighbors=10,
+            min_dist=0.3,
+            metric='euclidean',
+            n_jobs=-1,          # random_state を外して並列処理を有効化
+            low_memory=False,
+        )
 
-    umap_coords_combined = reducer.fit_transform(X_combined_scaled)
+    # UMAPもNegativeデータのみを基準の多様体（manifold）として学習する
+    # これにより、AEでスムージングされたデータも元のNegativeの空間に投影される
+    n_fit = min(10000, len(X_neg_scaled))
+    rng = np.random.default_rng(seed)
+    fit_idx = rng.choice(len(X_neg_scaled), n_fit, replace=False)
+    X_fit = X_neg_scaled[fit_idx]
+
+    print(f"  Fitting UMAP on {n_fit} Negative points (subsampled)...")
+    reducer.fit(X_fit)
+    print(f"  Transforming all {len(X_combined_scaled)} points...")
+    umap_coords_combined = reducer.transform(X_combined_scaled)
     umap_neg = umap_coords_combined[:len(X_neg)]
     umap_stain = umap_coords_combined[len(X_neg):]
 
@@ -317,8 +354,8 @@ def run_umap_autofluor(neg_dir, stain_dir, output_path, stain_name="PI",
         fig.update_yaxes(title_text='UMAP 2', row=1, col=i)
 
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
-    fig.write_html(output_path)
-    print(f"\n  Interactive 2D plot saved to: {output_path}")
+    # fig.write_html(output_path)
+    # print(f"\n  Interactive 2D plot saved to: {output_path}")
 
     # Generate Matplotlib PNG if png_output_path is specified
     if png_output_path:
@@ -386,6 +423,8 @@ def main():
                         help='ArcSinh cofactor')
     parser.add_argument('--seed', type=int, default=42,
                         help='UMAP の乱数シード')
+    parser.add_argument('--method', type=str, default='poisson_glm',
+                        help='アンミキシング手法 (デフォルト: poisson_glm)')
 
     args = parser.parse_args()
 
@@ -401,7 +440,8 @@ def main():
         stain_name=args.stain,
         cofactor=args.cofactor,
         seed=args.seed,
-        png_output_path=args.png_output
+        png_output_path=args.png_output,
+        method=args.method
     )
 
 

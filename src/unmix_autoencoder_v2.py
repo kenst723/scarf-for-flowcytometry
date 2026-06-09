@@ -410,7 +410,7 @@ class TransformerAutoEncoderUnmixer:
     dim_feedforward : int
         Inner FFN dimension of each Transformer layer (default: 128).
     bottleneck_dim : int
-        Latent bottleneck dimension (default: 12).
+        Latent bottleneck dimension (default: 24).
     dropout : float
         Dropout probability in Transformer and MLP decoder (default: 0.30).
     alpha_cos : float
@@ -438,7 +438,7 @@ class TransformerAutoEncoderUnmixer:
         nhead=8,
         num_transformer_layers=3,
         dim_feedforward=128,
-        bottleneck_dim=12,
+        bottleneck_dim=24,
         dropout=0.30,
         alpha_cos=0.031,
         alpha_grad=0.002,

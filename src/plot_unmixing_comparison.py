@@ -30,6 +30,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.unmix_spectral import PoissonUnmixer, get_spectral_features
+from src.unmix_factory import get_unmixer
 
 
 def _render_density_panel(ax, data, wl_values, title, cmap, intensity_bins, vmax_global=None):
@@ -53,30 +54,27 @@ def _render_density_panel(ax, data, wl_values, title, cmap, intensity_bins, vmax
     # 0カウントは NaN (白表示)
     density[density == 0] = np.nan
 
-    # 波長位置への幾何学的マッピング
-    x_grid = np.arange(400, 801, 1)
-    density_grid = np.full((num_intensity_bins, len(x_grid) - 1), np.nan)
+    # チャンネル番号への幾何学的マッピング
+    x_grid = np.arange(num_channels + 1)
+    density_grid = np.full((num_intensity_bins, num_channels), np.nan)
 
     for i in range(num_channels):
-        center = wl_values[i]
-        w = 10 if i < 2 else (wl_values[i] - wl_values[i - 1])
-        start_idx = int(center - w / 2 - 400)
-        end_idx = int(center + w / 2 - 400)
-        start_idx = max(0, min(start_idx, len(x_grid) - 2))
-        end_idx = max(0, min(end_idx, len(x_grid) - 1))
-        for j in range(start_idx, end_idx):
-            density_grid[:, j] = density[:, i]
-
-
+        density_grid[:, i] = density[:, i]
 
     vmax = vmax_global if vmax_global else np.nanmax(density)
     im = ax.pcolormesh(x_grid, intensity_bins, density_grid,
                        cmap=cmap, norm=LogNorm(vmin=1, vmax=vmax))
-    ax.set_xlabel('Wavelength (nm)', fontsize=10)
-    ax.set_xlim(420, 800)
-    ax.set_xticks([420, 515, 610, 705, 800])
+    
+    ax.set_xlabel('Channel Index', fontsize=10)
+    ax.set_xlim(0, num_channels)
+    
+    # 5チャンネルごとにラベルを表示
+    tick_positions = np.arange(0, num_channels, 5)
+    ax.set_xticks(tick_positions + 0.5)
+    ax.set_xticklabels(tick_positions + 1)
+    
     ax.set_yscale('log')
-    ax.set_ylabel('Intensity', fontsize=10)
+    ax.set_ylabel('Intensity (Log10)', fontsize=10)
     ax.set_title(title, fontsize=12, fontweight='bold')
     ax.set_facecolor('white')
 
@@ -112,119 +110,95 @@ def plot_unmixing_comparison(neg_csv_path, stain_csv_path, output_path,
     X_stain = df_stain[wl_features].values
 
     # --- アンミキシング実行 ---
-    if method == 'autoencoder':
-        from src.unmix_autoencoder import AutoEncoderUnmixer
-        unmixer = AutoEncoderUnmixer()
-        unmixer.fit(X_neg, X_stain)
-        
-        parts_neg = os.path.normpath(neg_csv_path).split(os.sep)
-        date_str = parts_neg[-3]
-        model_path = os.path.join(PROJECT_ROOT, "analysis", "results", date_str, "ae_model.pth")
-        if os.path.exists(model_path):
-            unmixer.load_model(model_path)
-        else:
-            print(f"Warning: Missing AE model at {model_path}. It will use weights from random init.")
-            
-        X_unmixed_af = unmixer.remove_stain_component(X_stain)
-    elif method == 'transformer':
-        from src.unmix_autoencoder_v2 import TransformerAutoEncoderUnmixer
-        unmixer = TransformerAutoEncoderUnmixer()
-        
-        parts_neg = os.path.normpath(neg_csv_path).split(os.sep)
-        date_str = parts_neg[-3]
-        model_path = os.path.join(PROJECT_ROOT, "analysis", "results", date_str, "transformer_ae_model.pth")
-        
-        if os.path.exists(model_path):
-            unmixer.load_model(model_path)
-        else:
-            print(f"Warning: Missing TransformerAE model at {model_path}. It will use weights from random init.")
-            
-        X_unmixed_af = unmixer.remove_stain_component(X_stain)
-    elif method == 'scarf':
-        from src.unmix_scarf import ScarfKnnUnmixer
-        unmixer = ScarfKnnUnmixer(k_neighbors=10)
-        unmixer.fit(X_neg, X_stain)
-        
-        # Load embeddings
-        parts_neg = os.path.normpath(neg_csv_path).split(os.sep)
-        parts_stain = os.path.normpath(stain_csv_path).split(os.sep)
-        date_str = parts_neg[-3]
-        neg_label = parts_neg[-2]
-        stain_label = parts_stain[-2]
-        
-        emb_neg_path = os.path.join(PROJECT_ROOT, "learning", "results", date_str, neg_label, f"{neg_label}_scarf_embeddings.csv")
-        emb_stain_path = os.path.join(PROJECT_ROOT, "learning", "results", date_str, stain_label, f"{stain_label}_scarf_embeddings.csv")
-        
-        if os.path.exists(emb_neg_path) and os.path.exists(emb_stain_path):
-            emb_neg = pd.read_csv(emb_neg_path).values
-            emb_stain = pd.read_csv(emb_stain_path).values
-            unmixer.fit_knn(emb_neg, X_neg)
-            
-            S_AF_personalized = unmixer.get_personalized_saf(emb_stain)
-            C = unmixer._unmix_poisson_irls_personalized(X_stain, S_AF_personalized)
-            X_unmixed_af = X_stain - C[:, 1][:, None] * unmixer.S_Stain[None, :]
-        else:
-            print("Warning: Missing embeddings for plot. Falling back to PoissonUnmixer.")
-            unmixer = PoissonUnmixer()
-            unmixer.fit(X_neg, X_stain)
-            X_unmixed_af = unmixer.remove_stain_component(X_stain)
-    else:
-        unmixer = PoissonUnmixer()
-        unmixer.fit(X_neg, X_stain)
-        X_unmixed_af = unmixer.remove_stain_component(X_stain)
-
+    parts_neg = os.path.normpath(neg_csv_path).split(os.sep)
+    date_str = parts_neg[-3]
+    neg_label = parts_neg[-2]
+    
+    parts_stain = os.path.normpath(stain_csv_path).split(os.sep)
+    stain_label = parts_stain[-2]
+    
+    unmixer = get_unmixer(method, X_neg, X_stain, 
+                          date_str=date_str, 
+                          neg_label=neg_label, 
+                          stain_label=stain_label)
+                          
+    print(f"Unmixing {len(X_stain)} cells...")
+    X_unmixed_af = unmixer.remove_stain_component(X_stain)
     X_unmixed_af = np.maximum(X_unmixed_af, 0)
 
-    # --- プロット ---
-    cmap = copy.copy(plt.get_cmap('jet'))
-    cmap.set_bad(color='white')
+    # ---------------------------------------------------------
+    # Helper for saving a plot
+    # ---------------------------------------------------------
+    def _save_plot(x_n, x_s, x_u, title_suffix, out_path):
+        from scipy.signal import savgol_filter
+        window_length = 7
+        polyorder = 2
+        
+        # NaNs protection
+        x_n = np.nan_to_num(x_n, nan=0.0, posinf=0.0, neginf=0.0)
+        x_s = np.nan_to_num(x_s, nan=0.0, posinf=0.0, neginf=0.0)
+        x_u = np.nan_to_num(x_u, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # Smooth only the unmixed AF and the Negative reference for fair comparison
+        x_n = savgol_filter(x_n, window_length, polyorder, axis=1)
+        x_u = savgol_filter(x_u, window_length, polyorder, axis=1)
+        
+        x_n = np.maximum(x_n, 0)
+        x_u = np.maximum(x_u, 0)
 
-    fig, axes = plt.subplots(1, 3, figsize=(22, 6))
+        cmap = copy.copy(plt.get_cmap('jet'))
+        cmap.set_bad(color='white')
 
-    # 全パネルで同一のY軸（Intensity）とカラーバー範囲を使うため、最大・最小を事前計算
-    all_data = np.concatenate([X_neg, X_stain, X_unmixed_af], axis=0)
-    positive_data = all_data[all_data > 0]
-    if len(positive_data) > 0:
-        intensity_min = max(positive_data.min(), 1e-1)
-        intensity_max = all_data.max() * 1.5
-        num_intensity_bins = 256
-        intensity_bins = np.logspace(np.log10(intensity_min),
-                                     np.log10(intensity_max),
-                                     num_intensity_bins + 1)
-    else:
-        intensity_bins = np.logspace(np.log10(1e-1), np.log10(1e4), 257)
+        fig, axes = plt.subplots(1, 3, figsize=(22, 6))
 
-    im1 = _render_density_panel(
-        axes[0], X_neg, wl_values,
-        f'Negative Control\n(Autofluorescence Only, n={len(X_neg):,})',
-        cmap, intensity_bins)
+        all_data = np.concatenate([x_n, x_s, x_u], axis=0)
+        positive_data = all_data[all_data > 0]
+        if len(positive_data) > 0:
+            intensity_min = max(positive_data.min(), 1e-1)
+            intensity_max = all_data.max() * 1.5
+            num_intensity_bins = 256
+            intensity_bins = np.logspace(np.log10(intensity_min),
+                                         np.log10(intensity_max),
+                                         num_intensity_bins + 1)
+        else:
+            intensity_bins = np.logspace(np.log10(1e-1), np.log10(1e4), 257)
 
-    im2 = _render_density_panel(
-        axes[1], X_stain, wl_values,
-        f'{stain_name} Stained (Raw)\n(n={len(X_stain):,})',
-        cmap, intensity_bins)
+        im1 = _render_density_panel(
+            axes[0], x_n, wl_values,
+            f'Negative Control\n(Autofluorescence Only, n={len(x_n):,})',
+            cmap, intensity_bins)
 
-    im3 = _render_density_panel(
-        axes[2], X_unmixed_af, wl_values,
-        f'{stain_name} → Unmixed AF\n(Stain Component Removed, n={len(X_unmixed_af):,})',
-        cmap, intensity_bins)
+        im2 = _render_density_panel(
+            axes[1], x_s, wl_values,
+            f'{stain_name} Stained (Raw)\n(n={len(x_s):,})',
+            cmap, intensity_bins)
 
-    # カラーバーは右端のパネルにのみ付ける
-    for im, ax in [(im1, axes[0]), (im2, axes[1]), (im3, axes[2])]:
-        if im is not None:
-            fig.colorbar(im, ax=ax, label='Event Count', pad=0.02, shrink=0.85)
+        im3 = _render_density_panel(
+            axes[2], x_u, wl_values,
+            f'{stain_name} → Unmixed AF\n(Stain Component Removed, n={len(x_u):,})',
+            cmap, intensity_bins)
 
-    unmixer_name = "AutoEncoder" if method == 'autoencoder' else ("SCARF-kNN" if method == 'scarf' else "Poisson IRLS")
-    fig.suptitle(
-        f'Spectral Unmixing Comparison — {stain_name}\n'
-        f'Unmixer: {unmixer_name}  |  slope={unmixer.slope:.4f}  bg={unmixer.bg:.2f}',
-        fontsize=14, fontweight='bold', y=1.03)
+        for im, ax in [(im1, axes[0]), (im2, axes[1]), (im3, axes[2])]:
+            if im is not None:
+                fig.colorbar(im, ax=ax, label='Event Count', pad=0.02, shrink=0.85)
 
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    print(f"Saved: {output_path}")
+        unmixer_name = "AutoEncoder" if method in ['autoencoder', 'transformer'] else ("SCARF-kNN" if method == 'scarf' else f"GLM Poisson ({method})")
+        slope_str = f"slope={getattr(unmixer, 'slope', 0):.4f}"
+        bg_str = f"bg={getattr(unmixer, 'bg', 0):.2f}"
+        
+        fig.suptitle(
+            f'Spectral Unmixing Comparison — {stain_name} {title_suffix}\n'
+            f'Unmixer: {unmixer_name}  |  {slope_str}  {bg_str}',
+            fontsize=14, fontweight='bold', y=1.03)
+
+        plt.tight_layout()
+        os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+        plt.savefig(out_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Saved: {out_path}")
+
+    # 1. Save Unfiltered Plot (All Events)
+    _save_plot(X_neg, X_stain, X_unmixed_af, "", output_path)
 
 
 def find_csv_in_dir(results_base_dir, prefix):
@@ -250,8 +224,8 @@ def main():
                         help='色素名 (デフォルト: Calcein)')
     parser.add_argument('--output', type=str, default=None,
                         help='出力 PNG のパス')
-    parser.add_argument('--method', type=str, choices=['poisson', 'scarf', 'autoencoder'], default='poisson',
-                        help='アンミキシング手法 (poisson, scarf, autoencoder)')
+    parser.add_argument('--method', type=str, choices=['poisson', 'poisson_glm', 'scarf', 'autoencoder', 'transformer'], default='poisson',
+                        help='アンミキシング手法 (poisson, poisson_glm, scarf, autoencoder, transformer)')
     args = parser.parse_args()
 
     # CSV パスの解決

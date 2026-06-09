@@ -2,6 +2,9 @@ import os
 import glob
 import numpy as np
 import pandas as pd
+from scipy.optimize import minimize, nnls
+from joblib import Parallel, delayed
+from src.unmix_factory import get_unmixer
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -199,7 +202,9 @@ class PoissonUnmixer:
 
     def _unmix(self, X):
         """method パラメータに応じてアンミキシング手法を切り替える."""
-        if self.method == 'poisson':
+        if self.method == 'poisson_glm':
+            return self._unmix_poisson_glm(X)
+        elif self.method == 'poisson':
             return self._unmix_poisson_irls(X)
         else:
             return self._unmix_ols_sequential(X)
@@ -295,6 +300,117 @@ class PoissonUnmixer:
         C = np.column_stack((c_af, c_stain))
         return C
 
+    def _unmix_poisson_glm(self, X):
+        """
+        論文に準拠したポアソンデビアンス最小化によるアンミキシング (GLMアプローチ).
+        PyTorchがインストールされている場合は、GPUを用いた一括バッチ最適化を行い劇的に高速化する。
+        """
+        try:
+            import torch
+            import torch.nn as nn
+            import torch.optim as optim
+            has_torch = True
+        except ImportError:
+            has_torch = False
+
+        if has_torch:
+            return self._unmix_poisson_glm_torch(X)
+        else:
+            return self._unmix_poisson_glm_scipy(X)
+
+    def _unmix_poisson_glm_torch(self, X):
+        import torch
+        import torch.nn as nn
+        import torch.optim as optim
+        import time
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        X_t = torch.tensor(X, dtype=torch.float64, device=device)
+        # M行列自体にマイナスの光子ノイズが含まれている可能性があるためゼロクリップ
+        M_t = torch.tensor(np.maximum(self.S, 0), dtype=torch.float64, device=device)
+        epsilon = 1e-6
+        lambda_param = 0.0
+
+        # 初期値の決定: numpyのlstsqで近似 (SVDの収束エラー回避)
+        M_np = np.maximum(self.S, 0)
+        try:
+            alpha_init_np, _, _, _ = np.linalg.lstsq(M_np, X.T, rcond=None)
+            alpha_init_np = alpha_init_np.T
+        except np.linalg.LinAlgError:
+            # SVD convergence error fallback: Initialize proportionally to total intensity
+            alpha_init_np = np.zeros((X.shape[0], M_np.shape[1]))
+            intensity_scale = np.maximum(X.sum(axis=1), 0) / np.maximum(M_np.sum(), 1.0)
+            for j in range(M_np.shape[1]):
+                alpha_init_np[:, j] = intensity_scale
+            
+        alpha_init_np = np.clip(alpha_init_np, 1e-3, None)
+        alpha_init = torch.tensor(alpha_init_np, dtype=torch.float64, device=device)
+
+        # Softplus関数を用いた非負制約の導入 (alpha = softplus(w))
+        # そのため、最適化変数 w の初期値は inverse_softplus で計算する
+        # 強度が大きい場合 (alpha_init > 20) は exp() が float32 でオーバーフローするため、近似値 alpha_init をそのまま使う
+        w_init = torch.where(
+            alpha_init > 20.0, 
+            alpha_init, 
+            torch.log(torch.exp(alpha_init) - 1.0 + 1e-9)
+        )
+        w = nn.Parameter(w_init)
+
+        # 全細胞(N個)の最適化をAdamで一括実行 (L-BFGSの無限ループを回避)
+        optimizer = optim.Adam([w], lr=0.1)
+        
+        # r_safe は定数として事前計算
+        X_safe = torch.clamp(X_t, min=0.0) + epsilon
+
+        for _ in range(300):
+            optimizer.zero_grad()
+            # w から非負の alpha を生成
+            alpha = torch.nn.functional.softplus(w)
+            
+            # M_alpha = alpha @ M.T
+            M_alpha = torch.matmul(alpha, M_t.T)
+            M_alpha = torch.clamp(M_alpha, min=0.0) + epsilon
+            
+            # ポアソンデビアンスの主要項: sum( -r * log(Mα) + Mα )
+            deviance_term = torch.sum(-X_safe * torch.log(M_alpha) + M_alpha)
+            penalty_term = -lambda_param * torch.sum(alpha)
+            
+            loss = 2.0 * deviance_term + penalty_term
+            loss.backward()
+            optimizer.step()
+
+        # 最終的な alpha を取得し numpy 配列へ変換
+        alpha_final = torch.nn.functional.softplus(w).detach().cpu().numpy()
+        return alpha_final
+
+    def _unmix_poisson_glm_scipy(self, X):
+        """
+        PyTorchがない場合のフォールバック用 (Scipy L-BFGS-B を使用したループ処理)
+        """
+        M = np.maximum(self.S, 0)
+        lambda_param = 0.0
+        epsilon = 1e-6
+        
+        def optimize_single_cell(r):
+            alpha_0, _ = nnls(M, r)
+            
+            def objective(alpha):
+                r_safe = np.maximum(r, 0) + epsilon
+                M_alpha = np.maximum(M @ alpha, 0) + epsilon
+                deviance_term = np.sum(-r_safe * np.log(M_alpha) + M_alpha)
+                penalty_term = -lambda_param * np.sum(alpha)
+                return 2.0 * deviance_term + penalty_term
+                
+            bounds = [(0, None), (0, None)]
+            res = minimize(objective, alpha_0, method='L-BFGS-B', bounds=bounds)
+            return res.x
+            
+        # joblibのプロセス通信オーバーヘッドおよびAnacondaでのデッドロックを避けるため、
+        # 単純なリスト内包表記を使用する (各セルの計算が1ms未満であるためこちらの方が圧倒的に高速)
+        results = [optimize_single_cell(r) for r in X]
+        return np.array(results)
+
     def transform(self, X):
         """アンミキシングを実行し、漏れ込み補正済みの係数を返す.
 
@@ -349,27 +465,11 @@ def run_unmixing_group(results_base_dir, stain_name="PI", method='poisson', retr
         X_stain_all.append(df[wl_features].values)
     X_stain_all = np.vstack(X_stain_all)
     
-    if method == 'autoencoder':
-        print("    [AutoEncoder] Initializing AutoEncoderUnmixer...")
-        from src.unmix_autoencoder import AutoEncoderUnmixer
-        model_path = os.path.join(results_base_dir, "ae_model.pth")
-        unmixer = AutoEncoderUnmixer(model_save_path=model_path)
-        if not retrain and os.path.exists(model_path):
-            print("    [AutoEncoder] Found cached model. Skipping training...")
-            unmixer.load_model(model_path)
-        else:
-            unmixer.fit(X_neg_all, X_stain_all)
-    elif method == 'transformer':
-        print("    [TransformerAE] Initializing TransformerAutoEncoderUnmixer...")
-        from src.unmix_autoencoder_v2 import TransformerAutoEncoderUnmixer
-        model_path = os.path.join(results_base_dir, "transformer_ae_model.pth")
-        unmixer = TransformerAutoEncoderUnmixer(model_save_path=model_path, **tf_kwargs)
-        if not retrain and os.path.exists(model_path):
-            print("    [TransformerAE] Found cached model. Skipping training...")
-            unmixer.load_model(model_path)
-        else:
-            unmixer.fit(X_neg_all, X_stain_all)
-    elif method == 'scarf':
+    # We extract date_str from the first neg_csv_path
+    parts_neg = os.path.normpath(neg_csv_paths[0]).split(os.sep)
+    date_str = parts_neg[-3]
+    
+    if method == 'scarf':
         print("    [SCARF] Initializing ScarfKnnUnmixer...")
         from src.unmix_scarf import ScarfKnnUnmixer
         unmixer = ScarfKnnUnmixer(k_neighbors=10)
@@ -378,10 +478,10 @@ def run_unmixing_group(results_base_dir, stain_name="PI", method='poisson', retr
         neg_emb_list = []
         for path in neg_csv_paths:
             parts = path.split(os.sep)
-            date_str = parts[-3]
+            date_str_local = parts[-3]
             sample_label = parts[-2]
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            emb_path = os.path.join(project_root, "learning", "results", date_str, sample_label, f"{sample_label}_scarf_embeddings.csv")
+            emb_path = os.path.join(project_root, "learning", "results", date_str_local, sample_label, f"{sample_label}_scarf_embeddings.csv")
             if os.path.exists(emb_path):
                 neg_emb_list.append(pd.read_csv(emb_path).values)
             else:
@@ -390,8 +490,7 @@ def run_unmixing_group(results_base_dir, stain_name="PI", method='poisson', retr
         emb_neg_all = np.vstack(neg_emb_list)
         unmixer.fit_knn(emb_neg_all, X_neg_all)
     else:
-        unmixer = PoissonUnmixer()
-        unmixer.fit(X_neg_all, X_stain_all)
+        unmixer = get_unmixer(method, X_neg_all, X_stain_all, date_str=date_str, retrain=retrain, **tf_kwargs)
         
     print(f"    Calculated autoflour leakage slope: {unmixer.slope:.6f}")
     

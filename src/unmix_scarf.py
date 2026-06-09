@@ -111,6 +111,12 @@ class ScarfKnnUnmixer(PoissonUnmixer):
         C = np.column_stack((c_af, c_stain))
         return C
 
+    def _unmix(self, X):
+        """Override to use personalized S_AF if available."""
+        if hasattr(self, '_S_AF_personalized') and self._S_AF_personalized is not None:
+            return self._unmix_poisson_irls_personalized(X, self._S_AF_personalized)
+        return super()._unmix(X)
+
     def transform_with_scarf(self, X, emb_stain):
         """
         SCARF Embeddingを用いたパーソナライズド・アンミキシングを実行し、
