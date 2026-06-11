@@ -9,24 +9,33 @@ from sklearn.preprocessing import StandardScaler
 
 def main(experiment_dir):
     print(f"Loading data from: {experiment_dir}")
-    calcein_csvs = glob.glob(os.path.join(experiment_dir, "Calcein_*", "*.csv"))
+    channel_csvs = glob.glob(os.path.join(experiment_dir, "Calcein_*", "*_channel.csv"))
+    channel_csvs = [p for p in channel_csvs if "scarf_embeddings" not in p]
     
-    if not calcein_csvs:
-        print("Error: Could not find Calcein CSV files.")
+    if not channel_csvs:
+        print("Error: Could not find Calcein Channel CSV files.")
         return
         
-    df = pd.read_csv(calcein_csvs[0])
-    print(f"Loaded {len(df)} cells from {os.path.basename(calcein_csvs[0])}")
+    df_ch = pd.read_csv(channel_csvs[0])
+    
+    wl_csv = channel_csvs[0].replace('_channel.csv', '_wavelength.csv')
+    if not os.path.exists(wl_csv):
+        print("Error: Could not find matching Wavelength CSV file for Unmixed_Calcein.")
+        return
+        
+    df_wl = pd.read_csv(wl_csv)
+    
+    print(f"Loaded {len(df_ch)} cells from {os.path.basename(channel_csvs[0])}")
     
     # 散乱光の代替となると思われるV1, V2を抽出 (FSC, SSCの可能性が高い)
     scatter_cols = ['Area_V1', 'Height_V1', 'Area_V2', 'Height_V2']
     
     for col in scatter_cols:
-        if col not in df.columns:
+        if col not in df_ch.columns:
             print(f"Error: Required column {col} not found in the CSV.")
             return
             
-    X_scatter = df[scatter_cols].values
+    X_scatter = df_ch[scatter_cols].values
     
     # 標準化 (StandardScaler)
     scaler = StandardScaler()
@@ -36,12 +45,12 @@ def main(experiment_dir):
     reducer = umap.UMAP(n_components=2, n_neighbors=30, min_dist=0.3, random_state=42)
     umap_coords = reducer.fit_transform(X_scaled)
     
-    # 色付け用: Unmixed_Calcein (ArcSinh スケール)
-    if 'Unmixed_Calcein' not in df.columns:
-        print("Error: 'Unmixed_Calcein' not found.")
+    # 色付け用: Unmixed_Calcein (ArcSinh スケール) は df_wl にある
+    if 'Unmixed_Calcein' not in df_wl.columns:
+        print("Error: 'Unmixed_Calcein' not found in Wavelength CSV.")
         return
         
-    c_stain = df['Unmixed_Calcein'].values
+    c_stain = df_wl['Unmixed_Calcein'].values
     c_stain_arcsinh = np.arcsinh(c_stain / 150.0)
     
     print("Generating plot...")

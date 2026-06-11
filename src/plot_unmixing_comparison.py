@@ -109,6 +109,13 @@ def plot_unmixing_comparison(neg_csv_path, stain_csv_path, output_path,
     X_neg = df_neg[wl_features].values
     X_stain = df_stain[wl_features].values
 
+    from src.unmix_spectral import get_scatter_features
+    scat_features = get_scatter_features(df_neg)
+    scatter_neg = df_neg[scat_features].values if len(scat_features) > 0 else None
+    
+    scat_features_stain = get_scatter_features(df_stain)
+    scatter_stain = df_stain[scat_features_stain].values if len(scat_features_stain) > 0 else None
+
     # --- アンミキシング実行 ---
     parts_neg = os.path.normpath(neg_csv_path).split(os.sep)
     date_str = parts_neg[-3]
@@ -120,10 +127,11 @@ def plot_unmixing_comparison(neg_csv_path, stain_csv_path, output_path,
     unmixer = get_unmixer(method, X_neg, X_stain, 
                           date_str=date_str, 
                           neg_label=neg_label, 
-                          stain_label=stain_label)
+                          stain_label=stain_label,
+                          scatter_neg=scatter_neg)
                           
     print(f"Unmixing {len(X_stain)} cells...")
-    X_unmixed_af = unmixer.remove_stain_component(X_stain)
+    X_unmixed_af = unmixer.remove_stain_component(X_stain, scatter_val=scatter_stain)
     X_unmixed_af = np.maximum(X_unmixed_af, 0)
 
     # ---------------------------------------------------------
@@ -149,7 +157,7 @@ def plot_unmixing_comparison(neg_csv_path, stain_csv_path, output_path,
         cmap = copy.copy(plt.get_cmap('jet'))
         cmap.set_bad(color='white')
 
-        fig, axes = plt.subplots(1, 3, figsize=(22, 6))
+        fig, axes = plt.subplots(1, 3, figsize=(22, 6), sharex=True, sharey=True)
 
         all_data = np.concatenate([x_n, x_s, x_u], axis=0)
         positive_data = all_data[all_data > 0]
@@ -203,7 +211,7 @@ def plot_unmixing_comparison(neg_csv_path, stain_csv_path, output_path,
 
 def find_csv_in_dir(results_base_dir, prefix):
     """results ディレクトリ内から指定プレフィクスのサンプル CSV を1つ返す."""
-    pattern = os.path.join(results_base_dir, f"{prefix}_*", "*.csv")
+    pattern = os.path.join(results_base_dir, f"{prefix}_*", "*_wavelength.csv")
     csv_files = sorted(glob.glob(pattern))
     csv_files = [p for p in csv_files if "scarf_embeddings" not in p]
     if csv_files:

@@ -33,17 +33,13 @@ def plot_spectral_density(csv_path, output_path):
     """
     df = pd.read_csv(csv_path)
 
-    area_ch_cols = [c for c in df.columns if c.startswith('Area_') and not c.endswith('nm')]
     area_wl_cols = [c for c in df.columns if c.startswith('Area_') and c.endswith('nm')]
-    num_channels = len(area_ch_cols)
+    num_channels = len(area_wl_cols)
 
-    data_ch = df[area_ch_cols].values
     data_wl = df[area_wl_cols].values
-
-    ch_labels = [c.replace('Area_', '') for c in area_ch_cols]
     wl_values = [float(c.replace('Area_', '').replace('nm', '')) for c in area_wl_cols]
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
 
     # Custom colormap to make 0 counts transparent/white like the official software
     cmap = copy.copy(plt.get_cmap('jet'))
@@ -95,8 +91,7 @@ def plot_spectral_density(csv_path, output_path):
 
         fig.colorbar(im, ax=ax, label='Event Count', pad=0.02, shrink=0.9)
 
-    _plot_density(ax1, data_ch, 'Area (Channel) — Geometrical Spacing')
-    _plot_density(ax2, data_wl, 'Area (Wavelength) — Geometrical Spacing')
+    _plot_density(ax1, data_wl, 'Area (Wavelength) — Geometrical Spacing')
 
     sample_name = os.path.splitext(os.path.basename(csv_path))[0]
     fig.suptitle(f'Spectral Density — {sample_name}', fontsize=15, fontweight='bold', y=1.02)
